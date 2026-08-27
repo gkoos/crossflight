@@ -1,3 +1,14 @@
+![npm](https://img.shields.io/npm/v/crossflight)
+![Downloads](https://img.shields.io/npm/dm/crossflight)
+![GitHub stars](https://img.shields.io/github/stars/gkoos/crossflight?style=social)
+
+![Build](https://github.com/gkoos/crossflight/actions/workflows/ci.yml/badge.svg)
+![codecov](https://codecov.io/gh/gkoos/crossflight/branch/main/graph/badge.svg)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/crossflight/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
+
+![MIT](https://img.shields.io/npm/l/crossflight)
+![Types](https://img.shields.io/npm/types/crossflight)
+
 # Crossflight
 
 Cross-process cache stampede protection for the cache you already use.
