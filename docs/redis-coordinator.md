@@ -86,6 +86,7 @@ This is important because waiting callers must not block forever if Redis Pub/Su
 redisCoordinator(client, {
   namespace?: 'crossflight',
   hashKey?: (key: string) => string,
+  commandTimeoutMs?: number,
 })
 ```
 
@@ -116,9 +117,21 @@ const coordinator = redisCoordinator(redis, {
 })
 ```
 
+### `commandTimeoutMs`
+
+Adds a per-command timeout guard to Redis operations used by the coordinator. This includes lease acquire, renew, complete/abandon, and the `waitForChange()` subscribe path.
+
+```ts
+const coordinator = redisCoordinator(redis, {
+  commandTimeoutMs: 500,
+})
+```
+
 ## Close semantics
 
-`close()` cleans up listener state and unsubscribes from tracking channels. It also closes the main Redis client and the internal subscription client when they are still open.
+`close()` cleans up listener state and unsubscribes from tracking channels. It closes only the internally created subscription client.
+
+The Redis client passed to `redisCoordinator()` is caller-owned and is not closed by the coordinator. This allows a shared client lifecycle across multiple subsystems.
 
 It intentionally swallows harmless “connection is closed” errors during shutdown so a graceful teardown does not turn into a noisy failure.
 

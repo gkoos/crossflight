@@ -89,6 +89,7 @@ const value = await crossflight.wrap(
 
 // When you're done
 await crossflight.close()
+await redis.quit()
 ```
 
 See the [Redis coordinator guide](docs/redis-coordinator.md) for the built-in distributed coordination behavior, key layout, and lease semantics.
@@ -161,7 +162,7 @@ try {
 
 ## Failure semantics
 
-Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. When an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
+Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. While the owner is executing the loader, Crossflight periodically renews the lease to keep ownership valid for long-running work. If an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
 
 The guarantee Crossflight offers is narrower: under normal operation, concurrent misses for the same key across all participating processes produce one loader execution, and every waiting caller receives that result.
 

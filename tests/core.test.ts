@@ -77,6 +77,75 @@ describe('crossflight core', () => {
     await coordinator.close()
   })
 
+  it('renews ownership periodically while a long-running loader is active', async () => {
+    const cache = new MemoryCache()
+    let renewCalls = 0
+
+    const coordinator = {
+      async acquire(key: string) {
+        return {
+          key,
+          async renew() {
+            renewCalls += 1
+            return true
+          },
+          async complete() {},
+          async abandon() {},
+        }
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    await expect(
+      crossflight.wrap('renew:periodic:key', async () => {
+        await new Promise(resolve => setTimeout(resolve, 120))
+        return 'value'
+      }, { ttl: 40 })
+    ).resolves.toBe('value')
+
+    expect(renewCalls).toBeGreaterThanOrEqual(2)
+    await crossflight.close()
+  })
+
+  it('attempts lease acquisition again after waking up to a cache miss', async () => {
+    const cache = new MemoryCache()
+    let acquireCalls = 0
+    let waitCalls = 0
+
+    const coordinator = {
+      async acquire(key: string) {
+        acquireCalls += 1
+        if (acquireCalls === 1) {
+          return null
+        }
+
+        return {
+          key,
+          async renew() { return true },
+          async complete() {},
+          async abandon() {},
+        }
+      },
+      async waitForChange() {
+        waitCalls += 1
+      },
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator, maxRetryAttempts: 2 })
+
+    await expect(
+      crossflight.wrap('waiter:reacquire:key', async () => 'owned-after-reacquire')
+    ).resolves.toBe('owned-after-reacquire')
+
+    expect(waitCalls).toBe(1)
+    expect(acquireCalls).toBe(2)
+    await crossflight.close()
+  })
+
   it('aborts an in-memory wait when its signal is cancelled', async () => {
     const coordinator = new InMemoryCoordinator()
     const controller = new AbortController()
@@ -594,6 +663,88 @@ describe('crossflight core', () => {
     await expect(
       crossflight.wrap('wait:fail:open:key', async () => 'fallback')
     ).resolves.toBe('fallback')
+
+    await crossflight.close()
+  })
+
+  it('falls back to loader when waiter wakes to a miss and still cannot acquire ownership in fail-open mode', async () => {
+    const cache = new MemoryCache()
+    let acquireCalls = 0
+
+    const coordinator = {
+      async acquire() {
+        acquireCalls += 1
+        return null
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      maxRetryAttempts: 1,
+    })
+
+    await expect(
+      crossflight.wrap('waiter:miss:fail-open:key', async () => 'fallback-after-miss')
+    ).resolves.toBe('fallback-after-miss')
+
+    expect(acquireCalls).toBe(1)
+    await crossflight.close()
+  })
+
+  it('falls back to loader when acquire throws and failureMode is fail-open', async () => {
+    const cache = new MemoryCache()
+    const coordinator = {
+      async acquire() {
+        throw new Error('acquire boom')
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator, failureMode: 'fail-open' })
+
+    await expect(
+      crossflight.wrap('acquire:fail:open:key', async () => 'fallback-acquire')
+    ).resolves.toBe('fallback-acquire')
+
+    await crossflight.close()
+  })
+
+  it('fails with the renewal error when periodic renewal throws during owner execution', async () => {
+    const cache = new MemoryCache()
+    let renewCalls = 0
+
+    const coordinator = {
+      async acquire(key: string) {
+        return {
+          key,
+          async renew() {
+            renewCalls += 1
+            if (renewCalls >= 2) {
+              throw new Error('renew failed')
+            }
+            return true
+          },
+          async complete() {},
+          async abandon() {},
+        }
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    await expect(
+      crossflight.wrap('renew:error:key', async () => {
+        await new Promise(resolve => setTimeout(resolve, 120))
+        return 'value'
+      }, { ttl: 40 })
+    ).rejects.toThrow('renew failed')
 
     await crossflight.close()
   })

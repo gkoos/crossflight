@@ -14,6 +14,7 @@ const DEFAULT_TTL_MS = 30_000
 const DEFAULT_MAX_RETRY_ATTEMPTS = 64
 const DEFAULT_RETRY_BACKOFF = (attempt: number): number =>
   Math.min(200, 25 + attempt * 25 + Math.floor(Math.random() * 25))
+const MIN_RENEW_INTERVAL_MS = 25
 
 export function createCrossflight({
   cache,
@@ -72,6 +73,7 @@ export function createCrossflight({
 
     const effectiveFailureMode: CoordinationFailureMode =
       options.failureMode ?? failureMode
+    const leaseTtlMs = options.ttl ?? defaultTtlMs
 
     const controller = new AbortController()
     const timeoutMs = options.timeoutMs ?? defaultTimeoutMs
@@ -99,6 +101,24 @@ export function createCrossflight({
 
     activeControllers.set(key, controller)
 
+    const acquireLease = async () => {
+      try {
+        return await coordinator.acquire(key, {
+          signal: controller.signal,
+          ttlMs: leaseTtlMs,
+        })
+      } catch (error) {
+        emit({ type: 'failed', key, error })
+        if (controller.signal.aborted) {
+          throw controller.signal.reason
+        }
+        if (effectiveFailureMode === 'fail-open') {
+          return null
+        }
+        throw error
+      }
+    }
+
     const flight = (async (): Promise<T> => {
       const startedAt = Date.now()
 
@@ -111,21 +131,10 @@ export function createCrossflight({
 
         emit({ type: 'miss', key })
 
-        let lease
-        try {
-          lease = await coordinator.acquire(key, {
-            signal: controller.signal,
-            ttlMs: options.ttl ?? defaultTtlMs,
-          })
-        } catch (error) {
-          emit({ type: 'failed', key, error })
-          if (controller.signal.aborted) {
-            throw controller.signal.reason
-          }
-          if (effectiveFailureMode === 'fail-open') {
-            return await loader()
-          }
-          throw error
+        let lease = await acquireLease()
+
+        if (!lease && effectiveFailureMode === 'fail-open') {
+          return await loader()
         }
 
         if (!lease) {
@@ -157,17 +166,20 @@ export function createCrossflight({
               emit({ type: 'hit', key })
               return retry.value
             }
+
+            lease = await acquireLease()
+            if (lease) {
+              break
+            }
           }
 
-          const timeoutError = new CoordinationTimeoutError(key)
+          if (!lease) {
+            const timeoutError = new CoordinationTimeoutError(key)
 
-          emit({ type: 'failed', key, error: timeoutError })
+            emit({ type: 'failed', key, error: timeoutError })
 
-          if (effectiveFailureMode === 'fail-open') {
-            return await loader()
+            throw timeoutError
           }
-
-          throw timeoutError
         }
 
         emit({ type: 'ownership_acquired', key })
@@ -179,9 +191,63 @@ export function createCrossflight({
             return recheck.value
           }
 
-          const value = await loader()
-          if (controller.signal.aborted) {
-            throw controller.signal.reason
+          let renewalError: unknown | null = null
+          let renewalTimer: ReturnType<typeof setTimeout> | null = null
+          let renewalInFlight: Promise<void> | null = null
+          let renewalStopped = false
+          const renewIntervalMs = Math.max(
+            MIN_RENEW_INTERVAL_MS,
+            Math.floor(leaseTtlMs / 2)
+          )
+
+          const stopRenewal = async () => {
+            renewalStopped = true
+            if (renewalTimer) {
+              clearTimeout(renewalTimer)
+              renewalTimer = null
+            }
+
+            if (renewalInFlight) {
+              await renewalInFlight.catch(() => undefined)
+            }
+          }
+
+          const scheduleRenewal = () => {
+            if (renewalStopped || controller.signal.aborted) {
+              return
+            }
+
+            renewalTimer = setTimeout(() => {
+              renewalInFlight = (async () => {
+                try {
+                  const stillOwner = await lease.renew()
+                  if (!stillOwner) {
+                    renewalError = new OwnershipLostError(key)
+                    controller.abort(renewalError)
+                    return
+                  }
+                } catch (error) {
+                  renewalError = error
+                  controller.abort(error)
+                  return
+                }
+
+                scheduleRenewal()
+              })()
+            }, renewIntervalMs)
+          }
+
+          scheduleRenewal()
+
+          let value: T
+          try {
+            value = await loader()
+          } finally {
+            await stopRenewal()
+          }
+
+          if (renewalError) {
+            throw renewalError
           }
 
           const stillOwner = await lease.renew()
@@ -194,6 +260,10 @@ export function createCrossflight({
             // does not join its own outer flight and deadlock.
             localFlights.delete(key)
             return runWithFlight(key, loader, { ...options, signal: controller.signal })
+          }
+
+          if (controller.signal.aborted) {
+            throw controller.signal.reason
           }
 
           await cache.set(key, value, { ttl: options.ttl })

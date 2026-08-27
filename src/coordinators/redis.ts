@@ -11,6 +11,14 @@ import type {
 export interface RedisCoordinatorOptions {
   namespace?: string
   hashKey?: (key: string) => string
+  commandTimeoutMs?: number
+}
+
+export class RedisCommandTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number) {
+    super(`Redis command timed out: ${operation} exceeded ${timeoutMs}ms`)
+    this.name = 'RedisCommandTimeoutError'
+  }
 }
 
 function defaultHashKey(key: string): string {
@@ -31,17 +39,43 @@ function isClosedConnectionMessage(message: string): boolean {
   return normalized.includes('connection') && normalized.includes('lost')
 }
 
+async function withCommandTimeout<T>(
+  timeoutMs: number | undefined,
+  operation: string,
+  run: () => Promise<T>
+): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return await run()
+  }
+
+  let cancelTimeout = () => {}
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(new RedisCommandTimeoutError(operation, timeoutMs))
+    }, timeoutMs)
+
+    cancelTimeout = () => clearTimeout(timer)
+  })
+
+  try {
+    return await Promise.race([run(), timeoutPromise])
+  } finally {
+    cancelTimeout()
+  }
+}
+
 class RedisLease implements Lease {
   constructor(
     public readonly key: string,
     private readonly ownerToken: string,
     private readonly client: IORedis,
     private readonly ttlMs: number,
-    private readonly changeChannel: string
+    private readonly changeChannel: string,
+    private readonly commandTimeoutMs?: number
   ) {}
 
   async renew(): Promise<boolean> {
-    const result = await this.client.eval(
+    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.renew.eval', async () => await this.client.eval(
       `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('pexpire', KEYS[1], ARGV[2])
@@ -52,17 +86,21 @@ class RedisLease implements Lease {
       this.key,
       this.ownerToken,
       String(this.ttlMs)
-    )
+    ))
 
     if (Number(result) === 1) {
-      await this.client.publish(this.changeChannel, `${Date.now()}`)
+      await withCommandTimeout(
+        this.commandTimeoutMs,
+        'lease.renew.publish',
+        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+      )
     }
 
     return Number(result) === 1
   }
 
   async complete(): Promise<void> {
-    const result = await this.client.eval(
+    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.complete.eval', async () => await this.client.eval(
       `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('del', KEYS[1])
@@ -72,15 +110,19 @@ class RedisLease implements Lease {
       1,
       this.key,
       this.ownerToken
-    )
+    ))
 
     if (Number(result) === 1) {
-      await this.client.publish(this.changeChannel, `${Date.now()}`)
+      await withCommandTimeout(
+        this.commandTimeoutMs,
+        'lease.complete.publish',
+        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+      )
     }
   }
 
   async abandon(): Promise<void> {
-    const result = await this.client.eval(
+    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.abandon.eval', async () => await this.client.eval(
       `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('del', KEYS[1])
@@ -90,10 +132,14 @@ class RedisLease implements Lease {
       1,
       this.key,
       this.ownerToken
-    )
+    ))
 
     if (Number(result) === 1) {
-      await this.client.publish(this.changeChannel, `${Date.now()}`)
+      await withCommandTimeout(
+        this.commandTimeoutMs,
+        'lease.abandon.publish',
+        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+      )
     }
   }
 }
@@ -101,6 +147,7 @@ class RedisLease implements Lease {
 export class RedisCoordinator implements Coordinator {
   private readonly namespace: string
   private readonly hashKey: (key: string) => string
+  private readonly commandTimeoutMs?: number
   private readonly subscribedChannels = new Set<string>()
   private readonly subscriptionClient: IORedis
   private closed = false
@@ -112,6 +159,7 @@ export class RedisCoordinator implements Coordinator {
   constructor(private readonly client: IORedis, options: RedisCoordinatorOptions = {}) {
     this.namespace = options.namespace ?? 'crossflight'
     this.hashKey = options.hashKey ?? defaultHashKey
+    this.commandTimeoutMs = options.commandTimeoutMs
     this.subscriptionClient = new IORedis(client.options)
 
     this.client.on('error', this.handleClientDisconnect)
@@ -160,7 +208,7 @@ export class RedisCoordinator implements Coordinator {
     const changeChannel = this.resolveChannel(key)
 
     try {
-      const result = await this.client.eval(
+      const result = await withCommandTimeout(this.commandTimeoutMs, 'acquire.eval', async () => await this.client.eval(
         `
         if redis.call('get', KEYS[1]) == false then
           return redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') ~= false and 1 or 0
@@ -171,15 +219,26 @@ export class RedisCoordinator implements Coordinator {
         baseKey,
         ownerToken,
         String(ttlMs)
-      )
+      ))
 
       if (Number(result) !== 1) {
         return null
       }
 
-      await this.client.publish(changeChannel, `${Date.now()}`)
+      await withCommandTimeout(
+        this.commandTimeoutMs,
+        'acquire.publish',
+        async () => await this.client.publish(changeChannel, `${Date.now()}`)
+      )
 
-      return new RedisLease(baseKey, ownerToken, this.client, ttlMs, changeChannel)
+      return new RedisLease(
+        baseKey,
+        ownerToken,
+        this.client,
+        ttlMs,
+        changeChannel,
+        this.commandTimeoutMs
+      )
     } catch (error) {
       this.handleClosedRedisError(error)
       throw error
@@ -237,7 +296,7 @@ export class RedisCoordinator implements Coordinator {
       signal?.addEventListener('abort', onAbort, { once: true })
       this.subscriptionClient.on('message', onMessage)
 
-      this.subscriptionClient.subscribe(channel)
+      withCommandTimeout(this.commandTimeoutMs, 'waitForChange.subscribe', async () => await this.subscriptionClient.subscribe(channel))
         .then(() => {
           this.subscribedChannels.add(channel)
         })
@@ -265,19 +324,6 @@ export class RedisCoordinator implements Coordinator {
     for (const channel of [...this.subscribedChannels]) {
       this.subscribedChannels.delete(channel)
       void this.subscriptionClient.unsubscribe(channel).catch(() => undefined)
-    }
-
-    try {
-      if (this.client.status !== 'close' && this.client.status !== 'end') {
-        await this.client.quit()
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (/Connection is closed|closed/i.test(message)) {
-        return
-      }
-
-      throw error
     }
 
     try {
