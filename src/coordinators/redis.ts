@@ -48,17 +48,19 @@ async function withCommandTimeout<T>(
     return await run()
   }
 
-  let timer: ReturnType<typeof setTimeout>
+  let cancelTimeout = () => {}
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       reject(new RedisCommandTimeoutError(operation, timeoutMs))
     }, timeoutMs)
+
+    cancelTimeout = () => clearTimeout(timer)
   })
 
   try {
     return await Promise.race([run(), timeoutPromise])
   } finally {
-    clearTimeout(timer)
+    cancelTimeout()
   }
 }
 
