@@ -15,7 +15,12 @@ describe.runIf(shouldRun)('redis cluster integration', () => {
     ])
 
     try {
-      const clusterNodes = await client.cluster('NODES')
+      const clusterNodesRaw = await client.cluster('NODES')
+      if (typeof clusterNodesRaw !== 'string') {
+        throw new Error('Expected Redis CLUSTER NODES response to be a string')
+      }
+
+      const clusterNodes = clusterNodesRaw
       const lines = clusterNodes
         .split('\n')
         .map(line => line.trim())

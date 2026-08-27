@@ -4,12 +4,9 @@
 
 ### Patch Changes
 
-- 458126b: ---
-
-  "crossflight": patch
-  ---
-
-  Document the Redis coordinator and distributed lease semantics, expand Redis integration coverage, and address CI and security hardening updates since the initial 0.1.0 release.
+- Documented the Redis coordinator and distributed lease semantics.
+- Expanded Redis integration coverage.
+- Addressed CI and security hardening updates since the initial 0.1.0 release.
 
 ## 0.1.0 — 2026-08-27
 

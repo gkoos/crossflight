@@ -112,6 +112,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /workspace/node_modules
     depends_on:
       - redis
     networks:
@@ -126,6 +127,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /workspace/node_modules
     depends_on:
       - redis
     networks:
@@ -141,6 +143,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /workspace/node_modules
     depends_on:
       - redis
     networks:
@@ -156,6 +159,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /workspace/node_modules
     depends_on:
       - redis-cluster-init
     networks:
