@@ -99,6 +99,10 @@ type MutableQuitClient = IORedis & {
   quit: () => Promise<unknown>
 }
 
+type MutableEvalClient = IORedis & {
+  eval: (...args: unknown[]) => Promise<unknown>
+}
+
 describe.runIf(shouldRun)('redis coordinator integration', () => {
   it('uses the redis coordinator path for a basic miss', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
@@ -305,6 +309,49 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     await expect(coordinator.acquire('redis:closed:external', { ttlMs: 500 })).rejects.toThrow(/closed|disconnected|connection/i)
     await expect(coordinator.waitForChange('redis:closed:external', { timeoutMs: 50 })).rejects.toThrow(/closed|disconnected|connection/i)
+  })
+
+  it('treats disconnected acquire errors as closed coordinator errors', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const mutableClient = client as MutableEvalClient
+
+    mutableClient.eval = async () => {
+      throw new Error('socket disconnected unexpectedly')
+    }
+
+    await expect(coordinator.acquire('redis:closed:disconnected', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(coordinator.acquire('redis:closed:disconnected:again', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+
+    await coordinator.close()
+  })
+
+  it('treats connection lost acquire errors as closed coordinator errors', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const mutableClient = client as MutableEvalClient
+
+    mutableClient.eval = async () => {
+      throw new Error('connection to redis was lost')
+    }
+
+    await expect(coordinator.acquire('redis:closed:lost', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+
+    await coordinator.close()
+  })
+
+  it('does not mask non-closed acquire errors that only mention connection', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const mutableClient = client as MutableEvalClient
+
+    mutableClient.eval = async () => {
+      throw new Error('connection timeout while writing command')
+    }
+
+    await expect(coordinator.acquire('redis:connection:timeout', { ttlMs: 500 })).rejects.toThrow('connection timeout while writing command')
+
+    await coordinator.close()
   })
 
   it('removes its redis lifecycle listeners when closed', async () => {

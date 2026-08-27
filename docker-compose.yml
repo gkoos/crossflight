@@ -108,7 +108,7 @@ services:
       --cluster-replicas 1 --cluster-yes"
 
   redis-integration-test:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace
@@ -122,7 +122,7 @@ services:
       sh -c "npm install --no-fund --no-audit && REDIS_URL=redis://redis:6379 RUN_REDIS_INTEGRATION=1 npx vitest run --config vitest.integration.config.ts"
 
   redis-integration-coverage:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace
@@ -137,7 +137,7 @@ services:
       sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.integration.config.ts --coverage"
 
   full-coverage:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace
@@ -152,7 +152,7 @@ services:
       sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.coverage.config.ts --coverage"
 
   redis-cluster-test:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace

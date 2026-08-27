@@ -17,6 +17,20 @@ function defaultHashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
+function isClosedConnectionMessage(message: string): boolean {
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes('connection is closed') || normalized.includes('connection closed')) {
+    return true
+  }
+
+  if (normalized.includes('disconnected')) {
+    return true
+  }
+
+  return normalized.includes('connection') && normalized.includes('lost')
+}
+
 class RedisLease implements Lease {
   constructor(
     public readonly key: string,
@@ -127,7 +141,7 @@ export class RedisCoordinator implements Coordinator {
 
   private handleClosedRedisError(error: unknown): never | void {
     const message = error instanceof Error ? error.message : String(error)
-    if (/Connection is closed|closed|disconnected|connection.*lost/i.test(message)) {
+    if (isClosedConnectionMessage(message)) {
       this.disconnected = true
       throw new Error('Redis coordinator is closed')
     }
