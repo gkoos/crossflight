@@ -1,0 +1,6 @@
+node_modules
+coverage
+coverage-integration
+dist
+.vitest
+.DS_Store

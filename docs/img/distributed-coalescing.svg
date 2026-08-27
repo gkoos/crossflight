@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" font-family="ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace" font-size="12">
+  <style>
+    text { fill: #24292f; }
+    .label { fill: #57606a; font-size: 11px; }
+    .node-label { fill: #57606a; font-size: 10px; font-weight: 600; }
+    .box { fill: #fff8c5; stroke: #d4a72c; stroke-width: 1.5; }
+    .hit { fill: #dafbe1; stroke: #2da44e; stroke-width: 1.5; }
+    .join { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .miss { fill: #ffebe9; stroke: #cf222e; stroke-width: 1.5; }
+    .wait { fill: #fff0f5; stroke: #bf3989; stroke-width: 1.5; }
+    .lease { fill: #f3f0ff; stroke: #7c3aed; stroke-width: 1.5; }
+    .arrow { stroke: #57606a; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .dashed { stroke: #57606a; stroke-width: 1.5; stroke-dasharray: 4,3; fill: none; marker-end: url(#arrowhead); }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .label { fill: #8b949e; }
+      .node-label { fill: #8b949e; }
+      .box { fill: #2d2208; stroke: #d4a72c; }
+      .hit { fill: #0f2d18; stroke: #3fb950; }
+      .join { fill: #051d30; stroke: #388bfd; }
+      .miss { fill: #2d0f0f; stroke: #f85149; }
+      .wait { fill: #2a0a1a; stroke: #db61a2; }
+      .lease { fill: #1a0f30; stroke: #a371f7; }
+      .arrow { stroke: #8b949e; }
+      .dashed { stroke: #8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#57606a" />
+    </marker>
+  </defs>
+
+  <!-- Node labels -->
+  <text x="12" y="20" class="node-label">Node A</text>
+  <text x="12" y="80" class="node-label">Node B</text>
+  <text x="12" y="130" class="node-label">Node C</text>
+
+  <!-- Caller sub-labels -->
+  <text x="20" y="48" class="label">caller 1</text>
+  <text x="20" y="68" class="label">caller 2</text>
+  <text x="20" y="98" class="label">caller 1</text>
+  <text x="20" y="148" class="label">caller 1</text>
+
+  <!-- miss boxes -->
+  <rect x="90" y="34" width="40" height="20" rx="3" class="miss"/>
+  <text x="110" y="48" text-anchor="middle">miss</text>
+  <rect x="90" y="54" width="40" height="20" rx="3" class="miss"/>
+  <text x="110" y="68" text-anchor="middle">miss</text>
+  <rect x="90" y="84" width="40" height="20" rx="3" class="miss"/>
+  <text x="110" y="98" text-anchor="middle">miss</text>
+  <rect x="90" y="134" width="40" height="20" rx="3" class="miss"/>
+  <text x="110" y="148" text-anchor="middle">miss</text>
+
+  <!-- Node A caller 1: acquire lease -->
+  <rect x="176" y="34" width="90" height="20" rx="3" class="lease"/>
+  <text x="221" y="48" text-anchor="middle">acquire lease</text>
+
+  <!-- Node A caller 2: joins local flight -->
+  <rect x="176" y="54" width="90" height="20" rx="3" class="join"/>
+  <text x="221" y="68" text-anchor="middle">joins flight</text>
+
+  <!-- Node B, C: lease taken -->
+  <rect x="176" y="84" width="80" height="20" rx="3" class="wait"/>
+  <text x="216" y="98" text-anchor="middle">lease taken</text>
+  <rect x="176" y="134" width="80" height="20" rx="3" class="wait"/>
+  <text x="216" y="148" text-anchor="middle">lease taken</text>
+
+  <!-- loader -->
+  <rect x="316" y="34" width="90" height="20" rx="3" class="box"/>
+  <text x="361" y="48" text-anchor="middle">loadUser()</text>
+
+  <!-- cache write -->
+  <rect x="454" y="34" width="90" height="20" rx="3" class="box"/>
+  <text x="499" y="48" text-anchor="middle">cache write</text>
+
+  <!-- wait for change boxes -->
+  <rect x="300" y="84" width="100" height="20" rx="3" class="wait"/>
+  <text x="350" y="98" text-anchor="middle">wait for change</text>
+  <rect x="300" y="134" width="100" height="20" rx="3" class="wait"/>
+  <text x="350" y="148" text-anchor="middle">wait for change</text>
+
+  <!-- cache hit boxes -->
+  <rect x="450" y="84" width="72" height="20" rx="3" class="hit"/>
+  <text x="486" y="98" text-anchor="middle">cache hit</text>
+  <rect x="450" y="134" width="72" height="20" rx="3" class="hit"/>
+  <text x="486" y="148" text-anchor="middle">cache hit</text>
+
+  <!-- result boxes -->
+  <rect x="580" y="34" width="52" height="20" rx="3" class="hit"/>
+  <text x="606" y="48" text-anchor="middle">result</text>
+  <rect x="580" y="54" width="52" height="20" rx="3" class="hit"/>
+  <text x="606" y="68" text-anchor="middle">result</text>
+  <rect x="580" y="84" width="52" height="20" rx="3" class="hit"/>
+  <text x="606" y="98" text-anchor="middle">result</text>
+  <rect x="580" y="134" width="52" height="20" rx="3" class="hit"/>
+  <text x="606" y="148" text-anchor="middle">result</text>
+
+  <!-- arrows -->
+  <!-- miss → acquire/joins/lease taken -->
+  <line x1="72" y1="44" x2="88" y2="44" class="arrow"/>
+  <line x1="72" y1="64" x2="88" y2="64" class="arrow"/>
+  <line x1="72" y1="94" x2="88" y2="94" class="arrow"/>
+  <line x1="72" y1="144" x2="88" y2="144" class="arrow"/>
+
+  <!-- acquire → loader -->
+  <line x1="266" y1="44" x2="314" y2="44" class="arrow"/>
+
+  <!-- loader → cache write -->
+  <line x1="406" y1="44" x2="452" y2="44" class="arrow"/>
+
+  <!-- joins flight → result (dashed, bypass) -->
+  <line x1="266" y1="64" x2="578" y2="64" class="dashed"/>
+
+  <!-- lease taken → wait for change -->
+  <line x1="256" y1="94" x2="298" y2="94" class="arrow"/>
+  <line x1="256" y1="144" x2="298" y2="144" class="arrow"/>
+
+  <!-- wait for change → cache hit (notification from cache write) -->
+  <line x1="400" y1="94" x2="448" y2="94" class="arrow"/>
+  <line x1="400" y1="144" x2="448" y2="144" class="arrow"/>
+
+  <!-- cache hit → result -->
+  <line x1="522" y1="94" x2="578" y2="94" class="arrow"/>
+  <line x1="522" y1="144" x2="578" y2="144" class="arrow"/>
+
+  <!-- cache write → result node A caller 1 -->
+  <line x1="544" y1="44" x2="578" y2="44" class="arrow"/>
+
+  <!-- pub/sub notification line from cache write down to wait nodes -->
+  <line x1="499" y1="54" x2="499" y2="78" stroke="#2da44e" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="499" y1="78" x2="350" y2="84" stroke="#2da44e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arrowhead)"/>
+  <line x1="499" y1="78" x2="350" y2="134" stroke="#2da44e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arrowhead)"/>
+  <text x="510" y="75" font-size="10" fill="#2da44e">notify</text>
+</svg>

@@ -1,0 +1,112 @@
+{
+  "name": "crossflight",
+  "version": "0.1.0",
+  "description": "Cross-process cache stampede protection for the cache you already use.",
+  "author": "Gabor Koos <gabor@gaborkoos.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gkoos/crossflight.git"
+  },
+  "homepage": "https://github.com/gkoos/crossflight#readme",
+  "bugs": "https://github.com/gkoos/crossflight/issues",
+  "keywords": [
+    "cache",
+    "stampede",
+    "coalescing",
+    "redis",
+    "distributed",
+    "cache-stampede",
+    "dog-piling",
+    "thundering-herd",
+    "cache-manager",
+    "keyv"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./coordinators/redis": {
+      "types": "./dist/coordinators/redis.d.ts",
+      "import": "./dist/coordinators/redis.js",
+      "require": "./dist/coordinators/redis.cjs"
+    },
+    "./adapters/keyv": {
+      "types": "./dist/adapters/keyv.d.ts",
+      "import": "./dist/adapters/keyv.js",
+      "require": "./dist/adapters/keyv.cjs"
+    },
+    "./adapters/cache-manager": {
+      "types": "./dist/adapters/cache-manager.d.ts",
+      "import": "./dist/adapters/cache-manager.js",
+      "require": "./dist/adapters/cache-manager.cjs"
+    },
+    "./adapters/cacheable": {
+      "types": "./dist/adapters/cacheable.d.ts",
+      "import": "./dist/adapters/cacheable.js",
+      "require": "./dist/adapters/cacheable.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier -w src",
+    "format:check": "prettier --check src",
+    "test": "npm run test:unit && npm run test:integration && npm run test:integration:cluster",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:unit:coverage": "vitest run --config vitest.config.ts --coverage",
+    "test:integration:coverage": "vitest run --config vitest.integration.config.ts --coverage",
+    "coverage": "node --no-deprecation ./scripts/coverage.js",
+    "test:ci": "node --no-deprecation ./scripts/coverage.js",
+    "prepublishOnly": "npm run build && npm run test:ci",
+    "version": "changeset version",
+    "test:watch": "vitest",
+    "docker:up": "docker compose up -d redis",
+    "docker:up:cluster": "docker compose up -d redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6 redis-cluster-init",
+    "docker:down": "docker compose down --remove-orphans",
+    "benchmark": "node --no-deprecation ./scripts/benchmark.js",
+    "test:integration": "node --no-deprecation ./scripts/test-integration.js",
+    "test:integration:cluster": "node --no-deprecation ./scripts/test-integration-cluster.js"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.1",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.10.2",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "cross-env": "^7.0.0",
+    "eslint": "^10.4.1",
+    "ioredis": "^5.6.0",
+    "prettier": "^3.6.2",
+    "tinybench": "^6.1.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.11"
+  }
+}

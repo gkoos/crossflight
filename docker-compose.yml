@@ -1,0 +1,164 @@
+networks:
+  redis-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: crossflight-redis
+    ports:
+      - '6379:6379'
+    command: ['redis-server', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-node-1:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-1
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-1.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7001:7001'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.11
+
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-2
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-2.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7002:7002'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.12
+
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-3
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-3.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7003:7003'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.13
+
+  redis-node-4:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-4
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-4.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7004:7004'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.14
+
+  redis-node-5:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-5
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-5.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7005:7005'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.15
+
+  redis-node-6:
+    image: redis:7-alpine
+    container_name: crossflight-redis-node-6
+    command: ['redis-server', '/etc/redis/redis.conf']
+    volumes:
+      - ./docker/redis/cluster-node-6.conf:/etc/redis/redis.conf:ro
+    ports:
+      - '7006:7006'
+    networks:
+      redis-cluster:
+        ipv4_address: 172.28.0.16
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+      - redis-node-4
+      - redis-node-5
+      - redis-node-6
+    networks:
+      - redis-cluster
+    entrypoint: >
+      sh -c "sleep 5; redis-cli --cluster create
+      172.28.0.11:7001 172.28.0.12:7002 172.28.0.13:7003
+      172.28.0.14:7004 172.28.0.15:7005 172.28.0.16:7006
+      --cluster-replicas 1 --cluster-yes"
+
+  redis-integration-test:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - redis
+    networks:
+      - default
+    environment:
+      REDIS_URL: redis://redis:6379
+    command: >
+      sh -c "npm install --no-fund --no-audit && REDIS_URL=redis://redis:6379 RUN_REDIS_INTEGRATION=1 npx vitest run --config vitest.integration.config.ts"
+
+  redis-integration-coverage:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - redis
+    networks:
+      - default
+    environment:
+      REDIS_URL: redis://redis:6379
+      RUN_REDIS_INTEGRATION: "1"
+    command: >
+      sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.integration.config.ts --coverage"
+
+  full-coverage:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - redis
+    networks:
+      - default
+    environment:
+      REDIS_URL: redis://redis:6379
+      RUN_REDIS_INTEGRATION: "1"
+    command: >
+      sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.coverage.config.ts --coverage"
+
+  redis-cluster-test:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    depends_on:
+      - redis-cluster-init
+    networks:
+      - redis-cluster
+    command: >
+      sh -c "npm install --no-fund --no-audit && RUN_REDIS_CLUSTER_INTEGRATION=1 npx vitest run --config vitest.integration.config.ts tests/redis-cluster.integration.test.ts"
