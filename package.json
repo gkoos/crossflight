@@ -92,6 +92,9 @@
       "optional": true
     }
   },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  },
   "devDependencies": {
     "@changesets/cli": "^3.0.1",
     "@eslint/js": "^10.0.1",
