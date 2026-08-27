@@ -91,6 +91,8 @@ const value = await crossflight.wrap(
 await crossflight.close()
 ```
 
+See the [Redis coordinator guide](docs/redis-coordinator.md) for the built-in distributed coordination behavior, key layout, and lease semantics.
+
 ## Adapters
 
 Built-in adapters are available for cache-manager, Keyv, and Cacheable:
@@ -189,6 +191,7 @@ The repository includes a benchmark suite that exercises coalescing under config
 
 - [Creating a cache adapter](docs/creating-an-adapter.md)
 - [Creating a coordinator](docs/creating-a-coordinator.md)
+- [Redis coordinator](docs/redis-coordinator.md)
 
 ## License
 
