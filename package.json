@@ -1,6 +1,6 @@
 {
   "name": "crossflight",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cross-process cache stampede protection for the cache you already use.",
   "author": "Gabor Koos <gabor@gaborkoos.com>",
   "license": "MIT",
