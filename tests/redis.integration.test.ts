@@ -211,9 +211,17 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const lease = await coordinator.acquire('redis:waiter:missed:notification', { ttlMs: 200 })
     expect(lease).not.toBeNull()
 
-    const startedAt = Date.now()
-    await coordinator.waitForChange('redis:waiter:missed:notification', { timeoutMs: 50 })
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(50)
+    const wait = coordinator.waitForChange('redis:waiter:missed:notification', { timeoutMs: 50 })
+
+    // Guard against regressions where waitForChange resolves immediately
+    // without waiting for either a message or timeout.
+    const earlyProbe = Promise.race([
+      wait.then(() => 'resolved' as const),
+      new Promise<'probe-timeout'>(resolve => setTimeout(() => resolve('probe-timeout'), 10)),
+    ])
+    await expect(earlyProbe).resolves.toBe('probe-timeout')
+
+    await expect(wait).resolves.toBeUndefined()
 
     await lease?.complete()
     await coordinator.close()
