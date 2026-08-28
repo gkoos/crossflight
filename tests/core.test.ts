@@ -749,6 +749,54 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
+  it('emits renewal_failed event when periodic renewal throws during owner execution', async () => {
+    const cache = new MemoryCache()
+    let renewCalls = 0
+
+    const coordinator = {
+      async acquire(key: string) {
+        return {
+          key,
+          async renew() {
+            renewCalls += 1
+            if (renewCalls >= 2) {
+              throw new Error('renew blip')
+            }
+            return true
+          },
+          async complete() {},
+          async abandon() {},
+        }
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const events: unknown[] = []
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      onEvent: e => events.push(e),
+    })
+
+    await expect(
+      crossflight.wrap('renew:event:key', async () => {
+        await new Promise(resolve => setTimeout(resolve, 120))
+        return 'value'
+      }, { ttl: 40 })
+    ).rejects.toThrow('renew blip')
+
+    const renewalFailedEvent = events.find(
+      e => (e as { type: string }).type === 'renewal_failed'
+    ) as { type: string; key: string; error: unknown } | undefined
+
+    expect(renewalFailedEvent).toBeDefined()
+    expect(renewalFailedEvent!.key).toBe('renew:event:key')
+    expect((renewalFailedEvent!.error as Error).message).toBe('renew blip')
+
+    await crossflight.close()
+  })
+
   it('swallows errors thrown by onEventError itself', async () => {
     const cache = new MemoryCache()
     const coordinator = new InMemoryCoordinator()
