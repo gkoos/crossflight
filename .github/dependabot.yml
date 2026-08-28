@@ -4,10 +4,35 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+    groups:
+      typescript:
+        patterns:
+          - "typescript"
+          - "@types/node"
+          - "tsup"
+          - "tsx"
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      linting:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "@typescript-eslint/*"
+          - "prettier"
+      release-tooling:
+        patterns:
+          - "@changesets/*"
+          - "cross-env"
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
