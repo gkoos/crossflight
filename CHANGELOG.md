@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- df11507: Add `renewal_failed` event and document the renewal-failure policy.
+
 ## 0.1.2
 
 ### Patch Changes
