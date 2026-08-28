@@ -42,6 +42,7 @@ export type CrossflightEvent =
   | { type: 'ownership_acquired'; key: string }
   | { type: 'completed'; key: string; durationMs: number }
   | { type: 'failed'; key: string; error: unknown }
+  | { type: 'renewal_failed'; key: string; error: unknown }
 
 export interface WrapOptions {
   ttl?: number

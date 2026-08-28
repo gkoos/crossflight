@@ -4,7 +4,7 @@
 
 ![Build](https://github.com/gkoos/crossflight/actions/workflows/ci.yml/badge.svg)
 ![codecov](https://codecov.io/gh/gkoos/crossflight/branch/main/graph/badge.svg)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/crossflight/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
+[![OpenSSF Scorecard](git status)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
 
 ![MIT](https://img.shields.io/npm/l/crossflight)
 ![Types](https://img.shields.io/npm/types/crossflight)
@@ -135,14 +135,14 @@ Per-call overrides in `wrap()`: `ttl`, `timeoutMs`, `failureMode`, `signal`.
 
 ## Errors
 
-When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when either the per-call timeout elapses or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is not thrown to callers; it surfaces through `onEvent` to indicate that the lease expired before the owner could publish the result, and Crossflight retries automatically.
+When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when either the per-call timeout elapses or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is thrown to the owner process when a periodic lease renewal confirms the lease is gone (`renew()` returns `false`); it surfaces through `onEvent` as a `failed` event and the owner's `wrap()` call rejects.
 
 | Class | When thrown |
 | --- | --- |
 | `CoordinationError` | Base class. |
 | `CoordinationClosedError` | `close()` was called while a `wrap()` was in flight. |
 | `CoordinationTimeoutError` | Per-call timeout elapsed or distributed retry limit exhausted. Has a `key` property. |
-| `OwnershipLostError` | Lease expired before the result was published. Surfaced via `onEvent`; Crossflight retries automatically. Has a `key` property. |
+| `OwnershipLostError` | Periodic lease renewal confirmed ownership is gone (`renew()` returned `false`). The owner's `wrap()` rejects with this error. Has a `key` property. |
 
 ```ts
 import { CoordinationError, CoordinationTimeoutError } from 'crossflight'
@@ -160,11 +160,38 @@ try {
 }
 ```
 
+## Events
+
+The `onEvent` hook receives a `CrossflightEvent` on every significant state change. All events carry at least `type` and `key`.
+
+| Event type | Trigger | Extra fields |
+| --- | --- | --- |
+| `hit` | Cache hit — value returned without coordination | — |
+| `miss` | Cache miss — coordination starting | — |
+| `local_join` | Caller joined an existing in-process flight for the same key | — |
+| `distributed_join` | Caller is waiting for a remote owner to complete | — |
+| `ownership_acquired` | This process acquired the lease and will run the loader | — |
+| `completed` | Owner finished, result written to cache | `durationMs` |
+| `failed` | Any failure: coordination error, loader error, or ownership loss | `error` |
+| `renewal_failed` | Periodic lease renewal threw during owner execution; owner will abort | `error` |
+
+`renewal_failed` fires immediately before the owner aborts. It is always followed by a `failed` event. Use it to distinguish renewal-specific failures from loader failures in your observability tooling.
+
 ## Failure semantics
 
 Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. While the owner is executing the loader, Crossflight periodically renews the lease to keep ownership valid for long-running work. If an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
 
 The guarantee Crossflight offers is narrower: under normal operation, concurrent misses for the same key across all participating processes produce one loader execution, and every waiting caller receives that result.
+
+### Renewal-failure policy
+
+When periodic lease renewal fails during owner execution, Crossflight follows a **fail-fast** policy: the owner aborts immediately, the lease is abandoned, and another process can reacquire ownership. This applies whether renewal fails because `renew()` throws (e.g. a Redis command timeout) or because `renew()` returns `false` (confirmed ownership loss).
+
+This is the only policy. A best-effort alternative — swallowing transient renewal errors and continuing the loader — was considered and rejected: without a coordinator-specific contract there is no reliable way to distinguish a transient blip from a permanent failure, and if the lease has already expired on the coordinator side, the loader is running without ownership regardless. The fail-fast policy makes failure visible and deterministic.
+
+To reduce unnecessary aborts under short-lived coordinator disruptions, tune two knobs:
+- **`defaultTtlMs`** (or per-call `ttl`): increase the lease TTL so the lease survives longer before expiring, giving the coordinator more time to recover before a renewal failure forces an abort.
+- **`commandTimeoutMs`** on the Redis coordinator: a short command timeout causes renewals to throw quickly on a blip, triggering an abort. Raising it allows the renewal to wait longer for a slow Redis before giving up.
 
 ## Cancellation
 

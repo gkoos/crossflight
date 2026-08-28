@@ -227,6 +227,7 @@ export function createCrossflight({
                     return
                   }
                 } catch (error) {
+                  emit({ type: 'renewal_failed', key, error })
                   renewalError = error
                   controller.abort(error)
                   return
