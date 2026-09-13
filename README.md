@@ -4,7 +4,7 @@
 
 ![Build](https://github.com/gkoos/crossflight/actions/workflows/ci.yml/badge.svg)
 ![codecov](https://codecov.io/gh/gkoos/crossflight/branch/main/graph/badge.svg)
-[![OpenSSF Scorecard](git status)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/crossflight/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
 
 ![MIT](https://img.shields.io/npm/l/crossflight)
 ![Types](https://img.shields.io/npm/types/crossflight)
@@ -174,6 +174,8 @@ The `onEvent` hook receives a `CrossflightEvent` on every significant state chan
 | `completed` | Owner finished, result written to cache | `durationMs` |
 | `failed` | Any failure: coordination error, loader error, or ownership loss | `error` |
 | `renewal_failed` | Periodic lease renewal threw during owner execution; owner will abort | `error` |
+
+Each failure produces exactly one `failed` event. Coordination errors that surface from an inner catch are not reported again when they reach the caller, so `onEvent` consumers can count `failed` events directly without deduplicating.
 
 `renewal_failed` fires immediately before the owner aborts. It is always followed by a `failed` event. Use it to distinguish renewal-specific failures from loader failures in your observability tooling.
 
