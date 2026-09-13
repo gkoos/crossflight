@@ -151,14 +151,10 @@ export function createCrossflight({
             try {
               await waitForRetry(key, attempt, controller.signal)
             } catch (error) {
+              // fail-open never enters this loop: a null lease takes the loader
+              // fallback before the distributed wait begins.
               if (controller.signal.aborted) {
                 throw controller.signal.reason
-              }
-              if (effectiveFailureMode === 'fail-open') {
-                // The error does not propagate, so report it here; every throw
-                // path is reported once by the outer catch.
-                emit({ type: 'failed', key, error })
-                return await loader()
               }
               throw error
             }

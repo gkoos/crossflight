@@ -714,6 +714,40 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
+  it('does not enter the distributed waiter loop when failureMode is fail-open', async () => {
+    const cache = new MemoryCache()
+    let waitCalls = 0
+    const events: Array<{ type: string }> = []
+
+    const coordinator = {
+      async acquire() {
+        throw new Error('acquire boom')
+      },
+      async waitForChange() {
+        waitCalls += 1
+      },
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      onEvent: event => events.push(event as { type: string }),
+    })
+
+    await expect(
+      crossflight.wrap('fail:open:no:waiter', async () => 'fallback')
+    ).resolves.toBe('fallback')
+
+    // fail-open falls back to the loader immediately, so the distributed waiter
+    // loop (and its fail-open branch) is never reached.
+    expect(waitCalls).toBe(0)
+    expect(events.some(event => event.type === 'distributed_join')).toBe(false)
+
+    await crossflight.close()
+  })
+
   it('fails with the renewal error when periodic renewal throws during owner execution', async () => {
     const cache = new MemoryCache()
     let renewCalls = 0
