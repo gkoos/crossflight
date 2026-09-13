@@ -4,7 +4,7 @@
 
 ![Build](https://github.com/gkoos/crossflight/actions/workflows/ci.yml/badge.svg)
 ![codecov](https://codecov.io/gh/gkoos/crossflight/branch/main/graph/badge.svg)
-[![OpenSSF Scorecard](git status)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gkoos/crossflight/badge)](https://scorecard.dev/viewer/?uri=github.com/gkoos/crossflight)
 
 ![MIT](https://img.shields.io/npm/l/crossflight)
 ![Types](https://img.shields.io/npm/types/crossflight)
