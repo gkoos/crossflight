@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -1280,6 +1282,70 @@ describe('crossflight core', () => {
 
       await crossflight.close()
     })
+  })
+
+  const runLifecycleChild = (script: string) =>
+    spawnSync(process.execPath, ['--import=tsx', '--eval', script], {
+      cwd: process.cwd(),
+      timeout: 10_000,
+      encoding: 'utf8',
+    })
+
+  it('does not keep an exiting process alive for a pending renewal timer', () => {
+    const script = `
+      import { createCrossflight } from './src/index.ts'
+
+      const coordinator = {
+        async acquire(key) {
+          return {
+            key,
+            async renew() { return true },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const cache = {
+        async get() { return { hit: false } },
+        async set() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      void crossflight.wrap('lifecycle:renewal:key', () => new Promise(() => {}), { ttl: 3000 })
+    `
+
+    const result = runLifecycleChild(script)
+
+    expect(result.signal).toBeNull()
+    expect(result.status).toBe(0)
+  })
+
+  it('does not keep an exiting process alive for a pending per-call timeout', () => {
+    const script = `
+      import { createCrossflight } from './src/index.ts'
+
+      const coordinator = {
+        async acquire() { throw new Error('coordinator down') },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const cache = {
+        async get() { return { hit: false } },
+        async set() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      void crossflight.wrap('lifecycle:timeout:key', () => new Promise(() => {}), { failureMode: 'fail-open', timeoutMs: 60000 })
+    `
+
+    const result = runLifecycleChild(script)
+
+    expect(result.signal).toBeNull()
+    expect(result.status).toBe(0)
   })
 })
 
