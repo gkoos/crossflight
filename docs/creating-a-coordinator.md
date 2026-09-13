@@ -231,10 +231,7 @@ export function redisCoordinator(client: Redis): Coordinator {
 
       const result = await client.eval(
         `
-        if redis.call('get', KEYS[1]) == false then
-          return redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') ~= false and 1 or 0
-        end
-        return 0
+        return redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') ~= false and 1 or 0
         `,
         1,
         key,
