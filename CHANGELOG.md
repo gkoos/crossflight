@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- 24a3f56: Emit exactly one `failed` event per error so `onEvent` consumers no longer observe duplicates when a rejection crosses an inner coordination catch before reaching the caller.
+- 11f9ca9: Acquire leases with a bare `SET NX` in the Redis Lua script instead of guarding it with a redundant `GET`. The script is atomic, so the extra read added a command execution without changing behavior.
+- f55063e: Unref the renewal and per-call timeout timers so a process that exits without calling `close()` is no longer held open waiting for them to fire.
+
 ## 0.2.0
 
 ### Minor Changes
