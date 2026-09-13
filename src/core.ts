@@ -94,6 +94,9 @@ export function createCrossflight({
         controller.abort(new CoordinationTimeoutError(key, timeoutMs))
       }, timeoutMs)
 
+      // Do not keep an exiting process alive; the timer still fires while it runs.
+      timeoutId.unref()
+
       controller.signal.addEventListener('abort', () => clearTimeout(timeoutId), {
         once: true,
       })
@@ -233,6 +236,9 @@ export function createCrossflight({
                 scheduleRenewal()
               })()
             }, renewIntervalMs)
+
+            // Do not keep an exiting process alive; the timer still fires while it runs.
+            renewalTimer.unref()
           }
 
           scheduleRenewal()
