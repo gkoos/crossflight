@@ -175,6 +175,8 @@ The `onEvent` hook receives a `CrossflightEvent` on every significant state chan
 | `failed` | Any failure: coordination error, loader error, or ownership loss | `error` |
 | `renewal_failed` | Periodic lease renewal threw during owner execution; owner will abort | `error` |
 
+Each failure produces exactly one `failed` event. Coordination errors that surface from an inner catch are not reported again when they reach the caller, so `onEvent` consumers can count `failed` events directly without deduplicating.
+
 `renewal_failed` fires immediately before the owner aborts. It is always followed by a `failed` event. Use it to distinguish renewal-specific failures from loader failures in your observability tooling.
 
 ## Failure semantics

@@ -108,11 +108,13 @@ export function createCrossflight({
           ttlMs: leaseTtlMs,
         })
       } catch (error) {
-        emit({ type: 'failed', key, error })
         if (controller.signal.aborted) {
           throw controller.signal.reason
         }
         if (effectiveFailureMode === 'fail-open') {
+          // The error does not propagate, so report it here; every throw path
+          // is reported once by the outer catch.
+          emit({ type: 'failed', key, error })
           return null
         }
         throw error
@@ -149,11 +151,13 @@ export function createCrossflight({
             try {
               await waitForRetry(key, attempt, controller.signal)
             } catch (error) {
-              emit({ type: 'failed', key, error })
               if (controller.signal.aborted) {
                 throw controller.signal.reason
               }
               if (effectiveFailureMode === 'fail-open') {
+                // The error does not propagate, so report it here; every throw
+                // path is reported once by the outer catch.
+                emit({ type: 'failed', key, error })
                 return await loader()
               }
               throw error
@@ -174,11 +178,8 @@ export function createCrossflight({
           }
 
           if (!lease) {
-            const timeoutError = new CoordinationTimeoutError(key)
-
-            emit({ type: 'failed', key, error: timeoutError })
-
-            throw timeoutError
+            // Reported once by the outer catch.
+            throw new CoordinationTimeoutError(key)
           }
         }
 
@@ -272,8 +273,8 @@ export function createCrossflight({
           emit({ type: 'completed', key, durationMs: Date.now() - startedAt })
           return value
         } catch (error) {
-          emit({ type: 'failed', key, error })
           await lease.abandon().catch(() => undefined)
+          // Reported once by the outer catch.
           throw error
         }
       } catch (error) {

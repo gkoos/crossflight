@@ -814,4 +814,438 @@ describe('crossflight core', () => {
 
     await crossflight.close()
   })
+
+  describe('failed event deduplication', () => {
+    type ObservedEvent = { type: string; key?: string; error?: unknown }
+
+    const failedEvents = (events: ObservedEvent[]) =>
+      events.filter(event => event.type === 'failed')
+
+    const failingCache = () => {
+      const cache = new MemoryCache()
+      cache.get = async () => {
+        throw new Error('cache get boom')
+      }
+      return cache
+    }
+
+    const throwOnWaitCoordinator = (message: string) => ({
+      async acquire() {
+        return null
+      },
+      async waitForChange(): Promise<never> {
+        throw new Error(message)
+      },
+      async close() {},
+    })
+
+    it('emits exactly one failed event when acquire throws', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire(): Promise<never> {
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:acquire:throw', async () => 'value')
+      ).rejects.toThrow('acquire boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('acquire boom')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event when waitForChange throws', async () => {
+      const events: ObservedEvent[] = []
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator: throwOnWaitCoordinator('wait boom'),
+        maxRetryAttempts: 2,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:wait:throw', async () => 'value')
+      ).rejects.toThrow('wait boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('wait boom')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event after retry exhaustion', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        maxRetryAttempts: 1,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:retry:exhausted', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect(failed[0]!.error).toBeInstanceOf(CoordinationTimeoutError)
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event when the owner loader throws', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() { return true },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:loader:throw', async () => {
+          throw new Error('loader boom')
+        })
+      ).rejects.toThrow('loader boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('loader boom')
+
+      await crossflight.close()
+    })
+
+    // Regression guard: this failure is only observed by the outer catch, so
+    // removing that emit (as originally proposed) would drop the event entirely.
+    it('emits exactly one failed event when the initial cache read throws', async () => {
+      const events: ObservedEvent[] = []
+      const crossflight = createCrossflight({
+        cache: failingCache(),
+        coordinator: new InMemoryCoordinator(),
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:cache:get:throw', async () => 'value')
+      ).rejects.toThrow('cache get boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('cache get boom')
+
+      await crossflight.close()
+    })
+
+    // Regression guard: same outer-catch-only path as above, via the fail-open fallback.
+    it('emits exactly one failed event when the fail-open fallback loader throws', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        failureMode: 'fail-open',
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:fail:open:loader:throw', async () => {
+          throw new Error('fallback boom')
+        })
+      ).rejects.toThrow('fallback boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('fallback boom')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event when cache.set throws', async () => {
+      const events: ObservedEvent[] = []
+      const cache = new MemoryCache()
+      cache.set = async () => {
+        throw new Error('cache set boom')
+      }
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() { return true },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:cache:set:throw', async () => 'value')
+      ).rejects.toThrow('cache set boom')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('cache set boom')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event when periodic renewal throws', async () => {
+      const events: ObservedEvent[] = []
+      let renewCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              if (renewCalls >= 2) {
+                throw new Error('renew boom')
+              }
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap(
+          'dedupe:renew:throw',
+          async () => {
+            await new Promise(resolve => setTimeout(resolve, 120))
+            return 'value'
+          },
+          { ttl: 40 }
+        )
+      ).rejects.toThrow('renew boom')
+
+      const failed = failedEvents(events)
+      const renewalFailed = events.filter(event => event.type === 'renewal_failed')
+      expect(renewalFailed).toHaveLength(1)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('renew boom')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event, the timeout, when a waiter is aborted', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange(_key: string, options?: { signal?: AbortSignal }) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 500)
+            options?.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer)
+                reject(new DOMException('The operation was aborted', 'AbortError'))
+              },
+              { once: true }
+            )
+          })
+        },
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        defaultTimeoutMs: 40,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:timeout:waiter', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect(failed[0]!.error).toBeInstanceOf(CoordinationTimeoutError)
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event when close() aborts an in-flight owner', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() { return true },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      const pending = crossflight.wrap('dedupe:close:abort', async () => {
+        await new Promise(resolve => setTimeout(resolve, 60))
+        return 'value'
+      })
+
+      await crossflight.close()
+
+      await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect(failed[0]!.error).toBeInstanceOf(CoordinationClosedError)
+    })
+
+    it('emits exactly one failed event with the caller reason when the signal is pre-aborted', async () => {
+      const events: ObservedEvent[] = []
+      const controller = new AbortController()
+      controller.abort(new Error('pre-aborted'))
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator: new InMemoryCoordinator(),
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:pre:aborted', async () => 'value', {
+          signal: controller.signal,
+        })
+      ).rejects.toThrow('pre-aborted')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('pre-aborted')
+
+      await crossflight.close()
+    })
+
+    it('emits exactly one failed event on confirmed ownership loss', async () => {
+      const cache = new MemoryCache()
+      const events: ObservedEvent[] = []
+      let acquireCalls = 0
+      let waitCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return {
+              key,
+              async renew() { return false },
+              async complete() {},
+              async abandon() {},
+            }
+          }
+          return null
+        },
+        async waitForChange() {
+          waitCalls += 1
+          if (waitCalls === 1) {
+            await cache.set('dedupe:ownership:lost', 'recovered-value')
+          }
+        },
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      const result = await crossflight.wrap(
+        'dedupe:ownership:lost',
+        async () => 'original'
+      )
+
+      expect(result).toBe('recovered-value')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect(failed[0]!.error).toBeInstanceOf(OwnershipLostError)
+
+      await crossflight.close()
+    })
+
+    it('keeps exactly one failed event on a recovered fail-open fallback', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire(): Promise<never> {
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        failureMode: 'fail-open',
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      await expect(
+        crossflight.wrap('dedupe:fail:open:recovered', async () => 'fallback-value')
+      ).resolves.toBe('fallback-value')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('acquire boom')
+
+      await crossflight.close()
+    })
+  })
 })
+
