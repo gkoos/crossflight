@@ -197,7 +197,7 @@ To reduce unnecessary aborts under short-lived coordinator disruptions, tune two
 
 ## Cancellation
 
-Passing an `AbortSignal` to `wrap()` cancels that caller's participation. The signal is scoped to the individual caller: if other callers are waiting on the same flight, the loader and the coordination lease continue unaffected. The flight ends when the owner completes or abandons it.
+Passing an `AbortSignal` to `wrap()` cancels that caller's participation, and `timeoutMs` bounds that caller's own wait. Both are scoped to the individual caller: they reject only that caller, and if other callers are waiting on the same flight the loader and the coordination lease continue unaffected. The shared flight is cancelled only when the **last** waiting caller cancels or when `close()` is called; otherwise it ends when the owner completes or abandons it. A cancelled caller receives its own reason (`signal.reason` or `CoordinationTimeoutError`).
 
 ## Scope
 

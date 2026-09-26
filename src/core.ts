@@ -16,6 +16,15 @@ const DEFAULT_RETRY_BACKOFF = (attempt: number): number =>
   Math.min(200, 25 + attempt * 25 + Math.floor(Math.random() * 25))
 const MIN_RENEW_INTERVAL_MS = 25
 
+interface Flight {
+  /** The shared in-flight work for a key; every local caller adopts it. */
+  promise: Promise<unknown>
+  /** Aborts the shared work: close(), a lost lease, or the last caller's cancel. */
+  controller: AbortController
+  /** Callers currently waiting that have not cancelled. */
+  waitingCallers: number
+}
+
 export function createCrossflight({
   cache,
   coordinator,
@@ -27,8 +36,7 @@ export function createCrossflight({
   onEvent,
   onEventError,
 }: CrossflightOptions): Crossflight {
-  const localFlights = new Map<string, Promise<unknown>>()
-  const activeControllers = new Map<string, AbortController>()
+  const localFlights = new Map<string, Flight>()
 
   const emit = (event: Parameters<NonNullable<typeof onEvent>>[0]) => {
     if (!onEvent) {
@@ -60,49 +68,142 @@ export function createCrossflight({
     })
   }
 
+  /**
+   * Binds one caller to a shared flight. The caller's own signal and timeout
+   * only ever cancel that caller's wait: while other callers are still waiting
+   * they leave the shared work untouched. A cancellation rejects with the
+   * caller's own reason, except when it is the last caller left, in which case
+   * the shared flight is aborted and its outcome is adopted so the flight's
+   * single failure is reported before the caller settles.
+   */
+  const attachCaller = <T>(
+    key: string,
+    record: Flight,
+    options: WrapOptions
+  ): Promise<T> => {
+    const signal = options.signal
+    const timeoutMs = options.timeoutMs ?? defaultTimeoutMs
+    const hasTimeout = timeoutMs !== undefined && timeoutMs > 0
+
+    // Nothing can cancel this caller, so the shared flight is its result.
+    if (!signal && !hasTimeout) {
+      return record.promise as Promise<T>
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      let detachAbort: (() => void) | undefined
+
+      const cleanup = () => {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId)
+          timeoutId = undefined
+        }
+
+        detachAbort?.()
+        detachAbort = undefined
+      }
+
+      const adoptFlight = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        record.promise.then(
+          (value) => resolve(value as T),
+          (error) => reject(error)
+        )
+      }
+
+      const cancelCaller = (reason: unknown) => {
+        if (settled) {
+          return
+        }
+
+        record.waitingCallers -= 1
+
+        if (record.waitingCallers === 0) {
+          // Last caller out cancels the work; adopt the flight so its failure
+          // event is emitted before this caller observes the rejection.
+          record.controller.abort(reason)
+          adoptFlight()
+          return
+        }
+
+        settled = true
+        cleanup()
+        reject(reason)
+      }
+
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        const delayMs = timeoutMs
+
+        timeoutId = setTimeout(() => {
+          cancelCaller(new CoordinationTimeoutError(key, delayMs))
+        }, delayMs)
+
+        // Do not keep an exiting process alive; the timer still fires while it runs.
+        timeoutId.unref()
+      }
+
+      if (signal) {
+        const onAbort = () => cancelCaller(signal.reason)
+
+        if (signal.aborted) {
+          cancelCaller(signal.reason)
+          return
+        }
+
+        signal.addEventListener('abort', onAbort, { once: true })
+        detachAbort = () => signal.removeEventListener('abort', onAbort)
+      }
+
+      record.promise.then(
+        (value) => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          cleanup()
+          resolve(value as T)
+        },
+        (error) => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          cleanup()
+          reject(error)
+        }
+      )
+    })
+  }
+
   const runWithFlight = async <T>(
     key: string,
     loader: () => Promise<T> | T,
     options: WrapOptions = {}
   ): Promise<T> => {
-    const current = localFlights.get(key)
-    if (current) {
+    const existing = localFlights.get(key)
+    if (existing) {
       emit({ type: 'local_join', key })
-      return (await current) as T
+      existing.waitingCallers += 1
+      return attachCaller<T>(key, existing, options)
     }
 
     const effectiveFailureMode: CoordinationFailureMode =
       options.failureMode ?? failureMode
     const leaseTtlMs = options.ttl ?? defaultTtlMs
 
+    // The shared controller belongs to the flight, not to any single caller.
+    // A caller's signal and timeout are applied by attachCaller, so one
+    // caller cancelling never aborts the work while other callers still wait.
     const controller = new AbortController()
-    const timeoutMs = options.timeoutMs ?? defaultTimeoutMs
-    const signal = options.signal
-
-    if (signal) {
-      if (signal.aborted) {
-        controller.abort(signal.reason)
-      } else {
-        signal.addEventListener('abort', () => controller.abort(signal.reason), {
-          once: true,
-        })
-      }
-    }
-
-    if (timeoutMs !== undefined && timeoutMs > 0) {
-      const timeoutId = setTimeout(() => {
-        controller.abort(new CoordinationTimeoutError(key, timeoutMs))
-      }, timeoutMs)
-
-      // Do not keep an exiting process alive; the timer still fires while it runs.
-      timeoutId.unref()
-
-      controller.signal.addEventListener('abort', () => clearTimeout(timeoutId), {
-        once: true,
-      })
-    }
-
-    activeControllers.set(key, controller)
 
     const acquireLease = async () => {
       try {
@@ -122,6 +223,13 @@ export function createCrossflight({
         }
         throw error
       }
+    }
+
+    const record: Flight = {
+      // Replaced with the flight promise below, before any caller can read it.
+      promise: Promise.resolve(),
+      controller,
+      waitingCallers: 1,
     }
 
     const flight = (async (): Promise<T> => {
@@ -262,8 +370,13 @@ export function createCrossflight({
             await lease.abandon().catch(() => undefined)
             // Remove from localFlights before retrying so the recursive call
             // does not join its own outer flight and deadlock.
-            localFlights.delete(key)
-            return runWithFlight(key, loader, { ...options, signal: controller.signal })
+            if (localFlights.get(key) === record) {
+              localFlights.delete(key)
+            }
+            return runWithFlight(key, loader, {
+              ...options,
+              signal: controller.signal,
+            })
           }
 
           if (controller.signal.aborted) {
@@ -283,13 +396,23 @@ export function createCrossflight({
         emit({ type: 'failed', key, error })
         throw error
       } finally {
-        localFlights.delete(key)
-        activeControllers.delete(key)
+        // Only remove our own record: a recursive ownership-loss retry may
+        // already have installed a new flight for the same key.
+        if (localFlights.get(key) === record) {
+          localFlights.delete(key)
+        }
       }
     })()
 
-    localFlights.set(key, flight)
-    return await flight
+    record.promise = flight
+
+    // If every waiting caller detaches before the flight settles, the abort is
+    // observed here so a late rejection never surfaces as unhandled.
+    flight.catch(() => undefined)
+
+    localFlights.set(key, record)
+
+    return attachCaller<T>(key, record, options)
   }
 
   return {
@@ -301,8 +424,8 @@ export function createCrossflight({
       return runWithFlight(key, loader, options ?? {})
     },
     close: async (): Promise<void> => {
-      for (const controller of activeControllers.values()) {
-        controller.abort(new CoordinationClosedError())
+      for (const record of localFlights.values()) {
+        record.controller.abort(new CoordinationClosedError())
       }
       await coordinator.close()
     },

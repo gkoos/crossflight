@@ -1347,5 +1347,220 @@ describe('crossflight core', () => {
     expect(result.signal).toBeNull()
     expect(result.status).toBe(0)
   })
+
+  describe('caller-scoped cancellation', () => {
+    type ObservedEvent = { type: string; key?: string; error?: unknown }
+
+    const failedEvents = (events: ObservedEvent[]) =>
+      events.filter(event => event.type === 'failed')
+
+    const deferred = () => {
+      let resolve!: () => void
+      const promise = new Promise<void>(res => {
+        resolve = res
+      })
+      return { promise, resolve }
+    }
+
+    const abortableWaiter = () => ({
+      async acquire() {
+        return null // another owner always holds the key
+      },
+      async waitForChange(_key: string, options?: { signal?: AbortSignal }) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 500)
+          options?.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer)
+              reject(new DOMException('The operation was aborted', 'AbortError'))
+            },
+            { once: true }
+          )
+        })
+      },
+      async close() {},
+    })
+
+    it('rejects only the cancelling joiner while the owner keeps waiting', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+      const gate = deferred()
+      let loadRuns = 0
+
+      const owner = crossflight.wrap('cancel:joiner', async () => {
+        loadRuns += 1
+        await gate.promise
+        return 'shared-value'
+      })
+
+      const controller = new AbortController()
+      const joiner = crossflight.wrap(
+        'cancel:joiner',
+        async () => 'joiner-value',
+        { signal: controller.signal }
+      )
+
+      controller.abort(new Error('joiner-cancelled'))
+      gate.resolve()
+
+      await expect(joiner).rejects.toThrow('joiner-cancelled')
+      await expect(owner).resolves.toBe('shared-value')
+      expect(loadRuns).toBe(1)
+      await expect(cache.get('cancel:joiner')).resolves.toEqual({
+        hit: true,
+        value: 'shared-value',
+      })
+
+      await crossflight.close()
+    })
+
+    it('keeps a joined caller alive when the owner cancels', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+      const gate = deferred()
+
+      const controller = new AbortController()
+      const owner = crossflight.wrap(
+        'cancel:owner',
+        async () => {
+          await gate.promise
+          return 'shared-value'
+        },
+        { signal: controller.signal }
+      )
+      const joiner = crossflight.wrap('cancel:owner', async () => 'joiner-value')
+
+      controller.abort(new Error('owner-cancelled'))
+      gate.resolve()
+
+      await expect(owner).rejects.toThrow('owner-cancelled')
+      await expect(joiner).resolves.toBe('shared-value')
+
+      await crossflight.close()
+    })
+
+    it('applies a per-call timeout to a joined caller only', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const owner = crossflight.wrap('cancel:timeout', async () => {
+        await new Promise(resolve => setTimeout(resolve, 120))
+        return 'shared-value'
+      })
+      const joiner = crossflight.wrap(
+        'cancel:timeout',
+        async () => 'joiner-value',
+        { timeoutMs: 20 }
+      )
+
+      const error = await joiner.catch(e => e)
+
+      expect(error).toBeInstanceOf(CoordinationTimeoutError)
+      expect((error as CoordinationTimeoutError).key).toBe('cancel:timeout')
+      await expect(owner).resolves.toBe('shared-value')
+
+      await crossflight.close()
+    })
+
+    it('applies defaultTimeoutMs to a joined caller', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultTimeoutMs: 20,
+      })
+
+      const owner = crossflight.wrap(
+        'cancel:default',
+        async () => {
+          await new Promise(resolve => setTimeout(resolve, 120))
+          return 'shared-value'
+        },
+        { timeoutMs: 400 }
+      )
+      const joiner = crossflight.wrap('cancel:default', async () => 'joiner-value')
+
+      await expect(joiner).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      await expect(owner).resolves.toBe('shared-value')
+
+      await crossflight.close()
+    })
+
+    it('cancels the shared flight once the last caller leaves', async () => {
+      const events: ObservedEvent[] = []
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator: abortableWaiter(),
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      const ownerController = new AbortController()
+      const joinerController = new AbortController()
+      const owner = crossflight.wrap('cancel:last', async () => 'never', {
+        signal: ownerController.signal,
+      })
+      const joiner = crossflight.wrap('cancel:last', async () => 'never', {
+        signal: joinerController.signal,
+      })
+
+      ownerController.abort(new Error('owner-cancelled'))
+      await expect(owner).rejects.toThrow('owner-cancelled')
+
+      // One caller left, so the shared flight is still running.
+      expect(failedEvents(events)).toHaveLength(0)
+
+      joinerController.abort(new Error('joiner-cancelled'))
+      await expect(joiner).rejects.toThrow('joiner-cancelled')
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('joiner-cancelled')
+
+      await crossflight.close()
+    })
+
+    it('rejects every waiting caller with one failure when close aborts a shared flight', async () => {
+      const events: ObservedEvent[] = []
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache: new MemoryCache(),
+        coordinator,
+        onEvent: event => events.push(event as ObservedEvent),
+      })
+
+      const owner = crossflight.wrap('cancel:close', async () => {
+        await new Promise(resolve => setTimeout(resolve, 60))
+        return 'value'
+      })
+      const joiner = crossflight.wrap('cancel:close', async () => 'value')
+
+      await crossflight.close()
+
+      await expect(owner).rejects.toBeInstanceOf(CoordinationClosedError)
+      await expect(joiner).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      const failed = failedEvents(events)
+      expect(failed).toHaveLength(1)
+      expect(failed[0]!.error).toBeInstanceOf(CoordinationClosedError)
+    })
+  })
 })
 
