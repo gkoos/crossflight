@@ -28,7 +28,10 @@ function defaultHashKey(key: string): string {
 function isClosedConnectionMessage(message: string): boolean {
   const normalized = message.toLowerCase()
 
-  if (normalized.includes('connection is closed') || normalized.includes('connection closed')) {
+  if (
+    normalized.includes('connection is closed') ||
+    normalized.includes('connection closed')
+  ) {
     return true
   }
 
@@ -75,24 +78,30 @@ class RedisLease implements Lease {
   ) {}
 
   async renew(): Promise<boolean> {
-    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.renew.eval', async () => await this.client.eval(
-      `
+    const result = await withCommandTimeout(
+      this.commandTimeoutMs,
+      'lease.renew.eval',
+      async () =>
+        await this.client.eval(
+          `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('pexpire', KEYS[1], ARGV[2])
       end
       return 0
       `,
-      1,
-      this.key,
-      this.ownerToken,
-      String(this.ttlMs)
-    ))
+          1,
+          this.key,
+          this.ownerToken,
+          String(this.ttlMs)
+        )
+    )
 
     if (Number(result) === 1) {
       await withCommandTimeout(
         this.commandTimeoutMs,
         'lease.renew.publish',
-        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+        async () =>
+          await this.client.publish(this.changeChannel, `${Date.now()}`)
       )
     }
 
@@ -100,45 +109,57 @@ class RedisLease implements Lease {
   }
 
   async complete(): Promise<void> {
-    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.complete.eval', async () => await this.client.eval(
-      `
+    const result = await withCommandTimeout(
+      this.commandTimeoutMs,
+      'lease.complete.eval',
+      async () =>
+        await this.client.eval(
+          `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('del', KEYS[1])
       end
       return 0
       `,
-      1,
-      this.key,
-      this.ownerToken
-    ))
+          1,
+          this.key,
+          this.ownerToken
+        )
+    )
 
     if (Number(result) === 1) {
       await withCommandTimeout(
         this.commandTimeoutMs,
         'lease.complete.publish',
-        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+        async () =>
+          await this.client.publish(this.changeChannel, `${Date.now()}`)
       )
     }
   }
 
   async abandon(): Promise<void> {
-    const result = await withCommandTimeout(this.commandTimeoutMs, 'lease.abandon.eval', async () => await this.client.eval(
-      `
+    const result = await withCommandTimeout(
+      this.commandTimeoutMs,
+      'lease.abandon.eval',
+      async () =>
+        await this.client.eval(
+          `
       if redis.call('get', KEYS[1]) == ARGV[1] then
         return redis.call('del', KEYS[1])
       end
       return 0
       `,
-      1,
-      this.key,
-      this.ownerToken
-    ))
+          1,
+          this.key,
+          this.ownerToken
+        )
+    )
 
     if (Number(result) === 1) {
       await withCommandTimeout(
         this.commandTimeoutMs,
         'lease.abandon.publish',
-        async () => await this.client.publish(this.changeChannel, `${Date.now()}`)
+        async () =>
+          await this.client.publish(this.changeChannel, `${Date.now()}`)
       )
     }
   }
@@ -156,7 +177,10 @@ export class RedisCoordinator implements Coordinator {
     this.disconnected = true
   }
 
-  constructor(private readonly client: IORedis, options: RedisCoordinatorOptions = {}) {
+  constructor(
+    private readonly client: IORedis,
+    options: RedisCoordinatorOptions = {}
+  ) {
     this.namespace = options.namespace ?? 'crossflight'
     this.hashKey = options.hashKey ?? defaultHashKey
     this.commandTimeoutMs = options.commandTimeoutMs
@@ -208,15 +232,20 @@ export class RedisCoordinator implements Coordinator {
     const changeChannel = this.resolveChannel(key)
 
     try {
-      const result = await withCommandTimeout(this.commandTimeoutMs, 'acquire.eval', async () => await this.client.eval(
-        `
+      const result = await withCommandTimeout(
+        this.commandTimeoutMs,
+        'acquire.eval',
+        async () =>
+          await this.client.eval(
+            `
         return redis.call('set', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') ~= false and 1 or 0
         `,
-        1,
-        baseKey,
-        ownerToken,
-        String(ttlMs)
-      ))
+            1,
+            baseKey,
+            ownerToken,
+            String(ttlMs)
+          )
+      )
 
       if (Number(result) !== 1) {
         return null
@@ -267,7 +296,9 @@ export class RedisCoordinator implements Coordinator {
         this.subscriptionClient.off('message', onMessage)
         if (this.subscribedChannels.has(channel)) {
           this.subscribedChannels.delete(channel)
-          void this.subscriptionClient.unsubscribe(channel).catch(() => undefined)
+          void this.subscriptionClient
+            .unsubscribe(channel)
+            .catch(() => undefined)
         }
       }
 
@@ -293,7 +324,11 @@ export class RedisCoordinator implements Coordinator {
       signal?.addEventListener('abort', onAbort, { once: true })
       this.subscriptionClient.on('message', onMessage)
 
-      withCommandTimeout(this.commandTimeoutMs, 'waitForChange.subscribe', async () => await this.subscriptionClient.subscribe(channel))
+      withCommandTimeout(
+        this.commandTimeoutMs,
+        'waitForChange.subscribe',
+        async () => await this.subscriptionClient.subscribe(channel)
+      )
         .then(() => {
           this.subscribedChannels.add(channel)
         })
@@ -324,7 +359,10 @@ export class RedisCoordinator implements Coordinator {
     }
 
     try {
-      if (this.subscriptionClient.status !== 'close' && this.subscriptionClient.status !== 'end') {
+      if (
+        this.subscriptionClient.status !== 'close' &&
+        this.subscriptionClient.status !== 'end'
+      ) {
         await this.subscriptionClient.quit()
       }
     } catch (error) {

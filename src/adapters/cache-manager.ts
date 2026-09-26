@@ -14,7 +14,11 @@ export function cacheManagerAdapter(cache: CacheManagerLike): CacheAdapter {
       }
       return { hit: true, value }
     },
-    async set<T>(key: string, value: T, options?: CacheSetOptions): Promise<void> {
+    async set<T>(
+      key: string,
+      value: T,
+      options?: CacheSetOptions
+    ): Promise<void> {
       const ttl = options?.ttl
       if (ttl === undefined) {
         await cache.set(key, value)

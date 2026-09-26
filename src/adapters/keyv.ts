@@ -15,7 +15,11 @@ export function keyvAdapter(cache: KeyvLike): CacheAdapter {
       }
       return { hit: true, value }
     },
-    async set<T>(key: string, value: T, options?: CacheSetOptions): Promise<void> {
+    async set<T>(
+      key: string,
+      value: T,
+      options?: CacheSetOptions
+    ): Promise<void> {
       await cache.set(key, value, options)
     },
   }
