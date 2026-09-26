@@ -832,6 +832,43 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
+  it('falls back to loader when a contended re-acquire fails in fail-open mode', async () => {
+    const cache = new MemoryCache()
+    let acquireCalls = 0
+    const events: Array<{ type: string; error?: unknown }> = []
+
+    const coordinator = {
+      async acquire() {
+        acquireCalls += 1
+        if (acquireCalls === 1) {
+          return null
+        }
+        throw new Error('acquire boom')
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      maxRetryAttempts: 2,
+      onEvent: event => events.push(event as { type: string; error?: unknown }),
+    })
+
+    await expect(
+      crossflight.wrap('fail:open:reacquire:fail', async () => 'fallback-value')
+    ).resolves.toBe('fallback-value')
+
+    expect(acquireCalls).toBe(2)
+    const failed = events.filter(event => event.type === 'failed')
+    expect(failed).toHaveLength(1)
+    expect((failed[0]!.error as Error).message).toBe('acquire boom')
+
+    await crossflight.close()
+  })
+
   it('fails with the renewal error when periodic renewal throws during owner execution', async () => {
     const cache = new MemoryCache()
     let renewCalls = 0
