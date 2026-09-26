@@ -693,7 +693,7 @@ describe('crossflight core', () => {
       crossflight.wrap('waiter:miss:fail-open:key', async () => 'fallback-after-miss')
     ).resolves.toBe('fallback-after-miss')
 
-    expect(acquireCalls).toBe(1)
+    expect(acquireCalls).toBe(2)
     await crossflight.close()
   })
 
@@ -716,7 +716,7 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
-  it('does not enter the distributed waiter loop when failureMode is fail-open', async () => {
+  it('does not enter the distributed waiter loop when the acquire itself fails in fail-open mode', async () => {
     const cache = new MemoryCache()
     let waitCalls = 0
     const events: Array<{ type: string }> = []
@@ -742,10 +742,136 @@ describe('crossflight core', () => {
       crossflight.wrap('fail:open:no:waiter', async () => 'fallback')
     ).resolves.toBe('fallback')
 
-    // fail-open falls back to the loader immediately, so the distributed waiter
-    // loop (and its fail-open branch) is never reached.
+    // A failed acquire short-circuits to the loader, so the waiter loop is not
+    // entered; only ordinary contention reaches it in fail-open mode.
     expect(waitCalls).toBe(0)
     expect(events.some(event => event.type === 'distributed_join')).toBe(false)
+
+    await crossflight.close()
+  })
+
+  it('joins the distributed wait instead of loading when the lease is contended in fail-open mode', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const events: Array<{ type: string }> = []
+    let loadRuns = 0
+    let releaseOwner: () => void = () => {}
+    const ownerGate = new Promise<void>(resolve => {
+      releaseOwner = resolve
+    })
+    let ownerStarted: () => void = () => {}
+    const ownerStartedGate = new Promise<void>(resolve => {
+      ownerStarted = resolve
+    })
+
+    const owner = createCrossflight({ cache, coordinator })
+    const fallback = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      onEvent: event => events.push(event as { type: string }),
+    })
+
+    const ownerResult = owner.wrap('fail:open:contended:key', async () => {
+      loadRuns += 1
+      ownerStarted()
+      await ownerGate
+      return 'owner-value'
+    })
+
+    // The loader runs only once the owner holds the lease, so this is the
+    // deterministic point at which the key is contended.
+    await ownerStartedGate
+
+    const fallbackResult = fallback.wrap('fail:open:contended:key', async () => {
+      loadRuns += 1
+      return 'fallback-value'
+    })
+
+    releaseOwner()
+
+    await expect(ownerResult).resolves.toBe('owner-value')
+    await expect(fallbackResult).resolves.toBe('owner-value')
+    expect(loadRuns).toBe(1)
+    expect(events.some(event => event.type === 'distributed_join')).toBe(true)
+    expect(events.some(event => event.type === 'hit')).toBe(true)
+
+    await owner.close()
+    await fallback.close()
+  })
+
+  it('becomes the owner in fail-open mode when a contended lease is released without a value', async () => {
+    const cache = new MemoryCache()
+    let acquireCalls = 0
+
+    const coordinator = {
+      async acquire(key: string) {
+        acquireCalls += 1
+        if (acquireCalls === 1) {
+          return null
+        }
+
+        return {
+          key,
+          async renew() {
+            return true
+          },
+          async complete() {},
+          async abandon() {},
+        }
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      maxRetryAttempts: 2,
+    })
+
+    await expect(
+      crossflight.wrap('fail:open:reacquire:key', async () => 'own-value')
+    ).resolves.toBe('own-value')
+
+    expect(acquireCalls).toBe(2)
+    await crossflight.close()
+  })
+
+  it('falls back to loader when a contended re-acquire fails in fail-open mode', async () => {
+    const cache = new MemoryCache()
+    let acquireCalls = 0
+    const events: Array<{ type: string; error?: unknown }> = []
+
+    const coordinator = {
+      async acquire() {
+        acquireCalls += 1
+        if (acquireCalls === 1) {
+          return null
+        }
+        throw new Error('acquire boom')
+      },
+      async waitForChange() {},
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+      maxRetryAttempts: 2,
+      onEvent: event => events.push(event as { type: string; error?: unknown }),
+    })
+
+    await expect(
+      crossflight.wrap('fail:open:reacquire:fail', async () => 'fallback-value')
+    ).resolves.toBe('fallback-value')
+
+    expect(acquireCalls).toBe(2)
+    const failed = events.filter(event => event.type === 'failed')
+    expect(failed).toHaveLength(1)
+    expect((failed[0]!.error as Error).message).toBe('acquire boom')
 
     await crossflight.close()
   })
@@ -1002,8 +1128,9 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
-    // Regression guard: same outer-catch-only path as above, via the fail-open fallback.
-    it('emits exactly one failed event when the fail-open fallback loader throws', async () => {
+    // Regression guard: the exhausted contention and the fallback loader error
+    // are each reported exactly once.
+    it('reports an exhausted contended wait and the fail-open fallback loader error once each', async () => {
       const events: ObservedEvent[] = []
       const coordinator = {
         async acquire() {
@@ -1016,6 +1143,7 @@ describe('crossflight core', () => {
         cache: new MemoryCache(),
         coordinator,
         failureMode: 'fail-open',
+        maxRetryAttempts: 1,
         onEvent: event => events.push(event as ObservedEvent),
       })
 
@@ -1026,11 +1154,13 @@ describe('crossflight core', () => {
       ).rejects.toThrow('fallback boom')
 
       const failed = failedEvents(events)
-      expect(failed).toHaveLength(1)
-      expect((failed[0]!.error as Error).message).toBe('fallback boom')
+      expect(failed).toHaveLength(2)
+      expect(failed[0]!.error).toBeInstanceOf(CoordinationTimeoutError)
+      expect((failed[1]!.error as Error).message).toBe('fallback boom')
 
       await crossflight.close()
     })
+
 
     it('emits exactly one failed event when cache.set throws', async () => {
       const events: ObservedEvent[] = []

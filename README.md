@@ -123,7 +123,7 @@ All options passed to `createCrossflight()`:
 | --- | --- | --- | --- |
 | `cache` | `CacheAdapter` | required | Cache backend adapter |
 | `coordinator` | `Coordinator` | required | Distributed coordination backend |
-| `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when coordination fails |
+| `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [fail-open](#fail-open)) |
 | `defaultTimeoutMs` | `number` | none | Per-call timeout in ms |
 | `defaultTtlMs` | `number` | `30000` | Default lease TTL when not specified per call |
 | `maxRetryAttempts` | `number` | `64` | Distributed retry limit before throwing `CoordinationTimeoutError` |
@@ -186,6 +186,12 @@ Each failure produces exactly one `failed` event. Coordination errors that surfa
 Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. While the owner is executing the loader, Crossflight periodically renews the lease to keep ownership valid for long-running work. If an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
 
 The guarantee Crossflight offers is narrower: under normal operation, concurrent misses for the same key across all participating processes produce one loader execution, and every waiting caller receives that result.
+
+### fail-open
+
+`failureMode: 'fail-open'` is about a **failed** coordination call, not about losing the race for the lease. When `acquire()`, `waitForChange()` or a re-acquire throws, Crossflight reports a `failed` event and runs the loader itself instead of rejecting the caller.
+
+Ordinary contention is different: `acquire()` resolving `null` means another owner holds the lease, so the caller still joins the distributed wait and serves that owner's result - exactly as it does under `fail-closed`. Only if the retry budget runs out while the lease stays contended does fail-open report a `failed` event carrying `CoordinationTimeoutError` and fall back to the loader (fail-closed rejects with the same error instead). Without that distinction, fail-open would run the loader on every contended miss and recreate the stampede it is meant to prevent.
 
 ### Renewal-failure policy
 

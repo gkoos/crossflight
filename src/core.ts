@@ -2,6 +2,7 @@ import type {
   CoordinationFailureMode,
   Crossflight,
   CrossflightOptions,
+  Lease,
   Loader,
   WrapOptions,
 } from './types.js'
@@ -25,6 +26,16 @@ interface Flight {
   /** Callers currently waiting that have not cancelled. */
   waitingCallers: number
 }
+
+/**
+ * Distinguishes "another owner holds the lease" (`contended`) from "the
+ * coordinator call itself failed" (`failed`): only the latter may trip the
+ * fail-open fallback, otherwise ordinary contention would defeat coalescing.
+ */
+type LeaseAcquire =
+  | { kind: 'acquired'; lease: Lease }
+  | { kind: 'contended' }
+  | { kind: 'failed' }
 
 export function createCrossflight({
   cache,
@@ -242,12 +253,14 @@ export function createCrossflight({
     // caller cancelling never aborts the work while other callers still wait.
     const controller = new AbortController()
 
-    const acquireLease = async () => {
+    const acquireLease = async (): Promise<LeaseAcquire> => {
       try {
-        return await coordinator.acquire(key, {
+        const lease = await coordinator.acquire(key, {
           signal: controller.signal,
           ttlMs: leaseTtlMs,
         })
+
+        return lease ? { kind: 'acquired', lease } : { kind: 'contended' }
       } catch (error) {
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -256,7 +269,7 @@ export function createCrossflight({
           // The error does not propagate, so report it here; every throw path
           // is reported once by the outer catch.
           emit({ type: 'failed', key, error })
-          return null
+          return { kind: 'failed' }
         }
         throw error
       }
@@ -281,11 +294,15 @@ export function createCrossflight({
 
         emit({ type: 'miss', key })
 
-        let lease = await acquireLease()
+        const acquired = await acquireLease()
 
-        if (!lease && effectiveFailureMode === 'fail-open') {
+        if (acquired.kind === 'failed') {
+          // Coordination failed and fail-open is on: this is the only outcome
+          // that runs the loader without joining the distributed wait.
           return await runLoader(loader, controller.signal)
         }
+
+        let lease = acquired.kind === 'acquired' ? acquired.lease : null
 
         if (!lease) {
           emit({ type: 'distributed_join', key })
@@ -299,11 +316,16 @@ export function createCrossflight({
             try {
               await waitForRetry(key, attempt, controller.signal)
             } catch (error) {
-              // fail-open never enters this loop: a null lease takes the loader
-              // fallback before the distributed wait begins.
               if (controller.signal.aborted) {
                 throw controller.signal.reason
               }
+
+              if (effectiveFailureMode === 'fail-open') {
+                // The wait itself failed: report it and fall back.
+                emit({ type: 'failed', key, error })
+                return await runLoader(loader, controller.signal)
+              }
+
               throw error
             }
 
@@ -315,13 +337,26 @@ export function createCrossflight({
               return retry.value
             }
 
-            lease = await acquireLease()
-            if (lease) {
+            const reacquired = await acquireLease()
+            if (reacquired.kind === 'failed') {
+              return await runLoader(loader, controller.signal)
+            }
+
+            if (reacquired.kind === 'acquired') {
+              lease = reacquired.lease
               break
             }
           }
 
           if (!lease) {
+            if (effectiveFailureMode === 'fail-open') {
+              // The retry budget ran out while the lease stayed contended:
+              // report it and fall back to running the loader.
+              const timeoutError = new CoordinationTimeoutError(key)
+              emit({ type: 'failed', key, error: timeoutError })
+              return await runLoader(loader, controller.signal)
+            }
+
             // Reported once by the outer catch.
             throw new CoordinationTimeoutError(key)
           }
