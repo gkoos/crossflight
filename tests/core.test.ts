@@ -1798,46 +1798,50 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
-    it('does not keep the flight open for a cache write that never settles', async () => {
-      let abandonCalls = 0
-      const coordinator = {
-        async acquire(key: string) {
-          return {
-            key,
-            async renew() {
-              return true
-            },
-            async complete() {},
-            async abandon() {
-              abandonCalls += 1
-            },
-          }
-        },
-        async waitForChange() {},
-        async close() {},
-      }
+    it('holds ownership until an in-flight cache write lands', async () => {
+      const store = new Map<string, unknown>()
+      const writes: string[] = []
+      let releaseFirst: (() => void) | undefined
       const cache = {
-        store: new Map<string, unknown>(),
-        async get<T>(key: string) {
-          return this.store.has(key)
-            ? { hit: true as const, value: this.store.get(key) as T }
-            : { hit: false as const }
+        async get() {
+          return { hit: false as const }
         },
-        async set() {
-          await new Promise(() => {})
+        async set<T>(key: string, value: T) {
+          writes.push('start:' + String(value))
+          if (!releaseFirst) {
+            await new Promise<void>(resolve => {
+              releaseFirst = resolve
+            })
+          }
+          store.set(key, value)
+          writes.push('land:' + String(value))
         },
       }
+      const coordinator = new InMemoryCoordinator()
       const crossflight = createCrossflight({ cache, coordinator })
+      const controller = new AbortController()
 
-      const error = await crossflight
-        .wrap('write:hang', async () => 'value', { timeoutMs: 30 })
+      const first = crossflight
+        .wrap('write:race', async () => 'old', { signal: controller.signal })
         .catch(e => e)
 
-      expect(error).toBeInstanceOf(CoordinationTimeoutError)
-      expect(abandonCalls).toBeGreaterThanOrEqual(1)
+      while (writes.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
 
-      await crossflight.close()
+      controller.abort(new Error('cancelled'))
+      const second = crossflight.wrap('write:race', async () => 'new')
+
+      await new Promise(resolve => setTimeout(resolve, 60))
+      releaseFirst?.()
+
+      const [firstResult, secondResult] = await Promise.all([first, second])
+      expect((firstResult as Error).message).toBe('cancelled')
+      expect(secondResult).toBe('new')
+      expect([...store.values()]).toEqual(['new'])
+      expect(writes).toEqual(['start:old', 'land:old', 'start:new', 'land:new'])
     })
+
   })
 })
 

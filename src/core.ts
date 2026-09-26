@@ -415,11 +415,12 @@ export function createCrossflight({
             throw controller.signal.reason
           }
 
-          await raceWithAbort(
-            cache.set(key, value, { ttl: options.ttl }),
-            controller.signal
-          )
-          await raceWithAbort(lease.complete(), controller.signal)
+          // Ownership is deliberately held until the write settles: a cache
+          // write has no signal, so releasing the lease early would let a
+          // replacement owner publish a newer value that this late, stale
+          // write could then overwrite.
+          await cache.set(key, value, { ttl: options.ttl })
+          await lease.complete()
           emit({ type: 'completed', key, durationMs: Date.now() - startedAt })
           return value
         } catch (error) {
