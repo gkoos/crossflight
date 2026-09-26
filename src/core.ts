@@ -2,6 +2,7 @@ import type {
   CoordinationFailureMode,
   Crossflight,
   CrossflightOptions,
+  Loader,
   WrapOptions,
 } from './types.js'
 import {
@@ -69,6 +70,54 @@ export function createCrossflight({
   }
 
   /**
+   * Resolves or rejects with the work, but stops waiting the moment the flight
+   * aborts and rejects with its abort reason instead. The work is not cancelled
+   * here - that is what the signal handed to the loader is for - so a late
+   * settlement is drained rather than left to surface as unhandled.
+   */
+  const raceWithAbort = <T>(
+    work: Promise<T>,
+    signal: AbortSignal
+  ): Promise<T> => {
+    work.catch(() => undefined)
+
+    return new Promise<T>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason)
+        return
+      }
+
+      const onAbort = () => reject(signal.reason)
+      signal.addEventListener('abort', onAbort, { once: true })
+
+      work.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(value)
+        },
+        (error) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(error)
+        }
+      )
+    })
+  }
+
+  /**
+   * Runs the loader with the flight's abort signal and never waits past an
+   * abort, so a loader that ignores the signal cannot hold the flight - and
+   * with it the lease and the cache write - open. A flight that has already
+   * aborted never starts the loader at all.
+   */
+  const runLoader = <T>(loader: Loader<T>, signal: AbortSignal): Promise<T> =>
+    raceWithAbort(
+      signal.aborted
+        ? Promise.reject<T>(signal.reason)
+        : (async () => loader(signal))(),
+      signal
+    )
+
+  /**
    * Binds one caller to a shared flight. The caller's own signal and timeout
    * only ever cancel that caller's wait: while other callers are still waiting
    * they leave the shared work untouched. Cancelling always settles the caller
@@ -114,9 +163,8 @@ export function createCrossflight({
         cleanup()
         record.waitingCallers -= 1
 
-        // The loader has no abort signal, so the flight may not observe the
-        // abort for a while. This caller still settles with its own reason at
-        // once; the aborted flight reports its failure event when it settles.
+        // This caller always settles with its own reason at once; the aborted
+        // flight stops waiting for its loader and reports its own failure.
         if (record.waitingCallers === 0) {
           record.controller.abort(reason)
         }
@@ -172,7 +220,7 @@ export function createCrossflight({
 
   const runWithFlight = async <T>(
     key: string,
-    loader: () => Promise<T> | T,
+    loader: Loader<T>,
     options: WrapOptions = {}
   ): Promise<T> => {
     const existing = localFlights.get(key)
@@ -236,7 +284,7 @@ export function createCrossflight({
         let lease = await acquireLease()
 
         if (!lease && effectiveFailureMode === 'fail-open') {
-          return await loader()
+          return await runLoader(loader, controller.signal)
         }
 
         if (!lease) {
@@ -342,7 +390,7 @@ export function createCrossflight({
 
           let value: T
           try {
-            value = await loader()
+            value = await runLoader(loader, controller.signal)
           } finally {
             await stopRenewal()
           }
@@ -367,6 +415,10 @@ export function createCrossflight({
             throw controller.signal.reason
           }
 
+          // Ownership is deliberately held until the write settles: a cache
+          // write has no signal, so releasing the lease early would let a
+          // replacement owner publish a newer value that this late, stale
+          // write could then overwrite.
           await cache.set(key, value, { ttl: options.ttl })
           await lease.complete()
           emit({ type: 'completed', key, durationMs: Date.now() - startedAt })
@@ -406,7 +458,7 @@ export function createCrossflight({
   return {
     wrap: async <T>(
       key: string,
-      loader: () => Promise<T> | T,
+      loader: Loader<T>,
       options?: WrapOptions
     ): Promise<T> => {
       return runWithFlight(key, loader, options ?? {})

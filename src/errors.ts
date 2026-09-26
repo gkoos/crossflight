@@ -16,9 +16,10 @@ export class CoordinationTimeoutError extends CoordinationError {
   readonly key: string
 
   constructor(key: string, durationMs?: number) {
-    const message = durationMs !== undefined
-      ? `Operation timed out after ${durationMs}ms for key "${key}"`
-      : `Timed out waiting for distributed coalescing to complete for key "${key}"`
+    const message =
+      durationMs !== undefined
+        ? `Operation timed out after ${durationMs}ms for key "${key}"`
+        : `Timed out waiting for distributed coalescing to complete for key "${key}"`
     super(message)
     this.name = 'CoordinationTimeoutError'
     this.key = key
@@ -29,7 +30,9 @@ export class OwnershipLostError extends CoordinationError {
   readonly key: string
 
   constructor(key: string) {
-    super(`Ownership of key "${key}" was lost before the value could be published`)
+    super(
+      `Ownership of key "${key}" was lost before the value could be published`
+    )
     this.name = 'OwnershipLostError'
     this.key = key
   }

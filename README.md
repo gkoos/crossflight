@@ -83,7 +83,7 @@ const crossflight = createCrossflight({
 
 const value = await crossflight.wrap(
   'product:42',
-  () => fetchProductFromDatabase(42),
+  (signal) => fetchProductFromDatabase(42, { signal }),
   { ttl: 30_000 },
 )
 
@@ -132,6 +132,8 @@ All options passed to `createCrossflight()`:
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
 
 Per-call overrides in `wrap()`: `ttl`, `timeoutMs`, `failureMode`, `signal`.
+
+The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
 
 ## Errors
 
@@ -187,7 +189,7 @@ The guarantee Crossflight offers is narrower: under normal operation, concurrent
 
 ### Renewal-failure policy
 
-When periodic lease renewal fails during owner execution, Crossflight follows a **fail-fast** policy: the owner aborts immediately, the lease is abandoned, and another process can reacquire ownership. This applies whether renewal fails because `renew()` throws (e.g. a Redis command timeout) or because `renew()` returns `false` (confirmed ownership loss).
+When periodic lease renewal fails during owner execution, Crossflight follows a **fail-fast** policy: the owner aborts immediately, the lease is abandoned, and another process can reacquire ownership. This applies whether renewal fails because `renew()` throws (e.g. a Redis command timeout) or because `renew()` returns `false` (confirmed ownership loss). The abort is not held back by the loader: `wrap()` rejects with the renewal error as soon as it fires, and the abort signal lets the loader stop its own work.
 
 This is the only policy. A best-effort alternative — swallowing transient renewal errors and continuing the loader — was considered and rejected: without a coordinator-specific contract there is no reliable way to distinguish a transient blip from a permanent failure, and if the lease has already expired on the coordinator side, the loader is running without ownership regardless. The fail-fast policy makes failure visible and deterministic.
 
@@ -198,6 +200,8 @@ To reduce unnecessary aborts under short-lived coordinator disruptions, tune two
 ## Cancellation
 
 Passing an `AbortSignal` to `wrap()` cancels that caller's participation, and `timeoutMs` bounds that caller's own wait. Both are scoped to the individual caller: they reject only that caller, and if other callers are waiting on the same flight the loader and the coordination lease continue unaffected. The shared flight is cancelled only when the **last** waiting caller cancels or when `close()` is called; otherwise it ends when the owner completes or abandons it. A cancelled caller receives its own reason (`signal.reason` or `CoordinationTimeoutError`).
+
+The signal handed to the loader is the flight's own signal, not any one caller's. When the flight aborts - the last caller cancels, `close()` is called, or the lease is lost - Crossflight stops waiting for the loader immediately, reports a single `failed` event, and abandons the lease. The loader keeps running until it observes the signal, so give it a way to stop: `wrap('product:42', (signal) => fetchProduct(42, { signal }))`. An abort never releases ownership while a cache write is in flight: the write is awaited first, so a replacement owner can never have its newer value overwritten by the abandoned one.
 
 ## Scope
 
