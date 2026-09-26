@@ -51,12 +51,16 @@ export interface WrapOptions {
   failureMode?: CoordinationFailureMode
 }
 
+/**
+ * Produces the value for a cache miss. It receives the shared flight's
+ * `AbortSignal`, which fires when the last waiting caller cancels, when
+ * `close()` is called, or when the lease is lost. A loader doing cancellable
+ * work should pass it through and stop as soon as it aborts.
+ */
+export type Loader<T> = (signal: AbortSignal) => Promise<T> | T
+
 export interface Crossflight {
-  wrap<T>(
-    key: string,
-    loader: () => Promise<T> | T,
-    options?: WrapOptions
-  ): Promise<T>
+  wrap<T>(key: string, loader: Loader<T>, options?: WrapOptions): Promise<T>
   close(): Promise<void>
 }
 

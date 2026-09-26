@@ -1690,5 +1690,154 @@ describe('crossflight core', () => {
       expect(failed[0]!.error).toBeInstanceOf(CoordinationClosedError)
     })
   })
+
+  describe('abort-aware loading', () => {
+    const deferred = () => {
+      let resolve!: () => void
+      const promise = new Promise<void>(res => {
+        resolve = res
+      })
+      return { promise, resolve }
+    }
+
+    it('passes the flight signal to the loader and aborts it on close', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+      const started = deferred()
+      let loaderSignal: AbortSignal | undefined
+
+      const pending = crossflight.wrap('signal:load', async (signal) => {
+        loaderSignal = signal
+        started.resolve()
+        await new Promise(() => {})
+        return 'value'
+      })
+
+      await started.promise
+      expect(loaderSignal?.aborted).toBe(false)
+
+      await crossflight.close()
+
+      expect(loaderSignal?.aborted).toBe(true)
+      await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
+    })
+
+    it('stops waiting for a loader that ignores the abort when the lease is lost', async () => {
+      const cache = new MemoryCache()
+      let abandonCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return false
+            },
+            async complete() {},
+            async abandon() {
+              abandonCalls += 1
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({ cache, coordinator })
+      const t0 = Date.now()
+
+      const error = await crossflight
+        .wrap(
+          'lost:lease',
+          async () => {
+            await new Promise(() => {})
+            return 'value'
+          },
+          { ttl: 30, timeoutMs: 2000 }
+        )
+        .catch(e => e)
+
+      expect(error).toBeInstanceOf(OwnershipLostError)
+      expect(Date.now() - t0).toBeLessThan(500)
+      expect(abandonCalls).toBeGreaterThanOrEqual(1)
+
+      await crossflight.close()
+    })
+
+    it('does not run the fail-open fallback once the flight is already aborted', async () => {
+      const cache = new MemoryCache()
+      let loadRuns = 0
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+      })
+      const controller = new AbortController()
+      controller.abort(new Error('gone'))
+
+      const error = await crossflight
+        .wrap(
+          'fail:open:aborted',
+          async () => {
+            loadRuns += 1
+            return 'value'
+          },
+          { signal: controller.signal }
+        )
+        .catch(e => e)
+
+      expect((error as Error).message).toBe('gone')
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('does not keep the flight open for a cache write that never settles', async () => {
+      let abandonCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {
+              abandonCalls += 1
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const cache = {
+        store: new Map<string, unknown>(),
+        async get<T>(key: string) {
+          return this.store.has(key)
+            ? { hit: true as const, value: this.store.get(key) as T }
+            : { hit: false as const }
+        },
+        async set() {
+          await new Promise(() => {})
+        },
+      }
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const error = await crossflight
+        .wrap('write:hang', async () => 'value', { timeoutMs: 30 })
+        .catch(e => e)
+
+      expect(error).toBeInstanceOf(CoordinationTimeoutError)
+      expect(abandonCalls).toBeGreaterThanOrEqual(1)
+
+      await crossflight.close()
+    })
+  })
 })
 
