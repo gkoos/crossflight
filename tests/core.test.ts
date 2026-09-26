@@ -759,6 +759,10 @@ describe('crossflight core', () => {
     const ownerGate = new Promise<void>(resolve => {
       releaseOwner = resolve
     })
+    let ownerStarted: () => void = () => {}
+    const ownerStartedGate = new Promise<void>(resolve => {
+      ownerStarted = resolve
+    })
 
     const owner = createCrossflight({ cache, coordinator })
     const fallback = createCrossflight({
@@ -770,11 +774,14 @@ describe('crossflight core', () => {
 
     const ownerResult = owner.wrap('fail:open:contended:key', async () => {
       loadRuns += 1
+      ownerStarted()
       await ownerGate
       return 'owner-value'
     })
 
-    await new Promise(resolve => setTimeout(resolve, 20))
+    // The loader runs only once the owner holds the lease, so this is the
+    // deterministic point at which the key is contended.
+    await ownerStartedGate
 
     const fallbackResult = fallback.wrap('fail:open:contended:key', async () => {
       loadRuns += 1

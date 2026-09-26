@@ -123,7 +123,7 @@ All options passed to `createCrossflight()`:
 | --- | --- | --- | --- |
 | `cache` | `CacheAdapter` | required | Cache backend adapter |
 | `coordinator` | `Coordinator` | required | Distributed coordination backend |
-| `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [failure semantics](#failure-semantics)) |
+| `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [fail-open](#fail-open)) |
 | `defaultTimeoutMs` | `number` | none | Per-call timeout in ms |
 | `defaultTtlMs` | `number` | `30000` | Default lease TTL when not specified per call |
 | `maxRetryAttempts` | `number` | `64` | Distributed retry limit before throwing `CoordinationTimeoutError` |
