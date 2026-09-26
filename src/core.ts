@@ -105,11 +105,9 @@ export function createCrossflight({
         detachAbort = undefined
       }
 
+      // Only the guarded last-caller branch cancels the shared work, so this
+      // runs at most once and needs no settled check of its own.
       const adoptFlight = () => {
-        if (settled) {
-          return
-        }
-
         settled = true
         cleanup()
         record.promise.then(
@@ -370,9 +368,7 @@ export function createCrossflight({
             await lease.abandon().catch(() => undefined)
             // Remove from localFlights before retrying so the recursive call
             // does not join its own outer flight and deadlock.
-            if (localFlights.get(key) === record) {
-              localFlights.delete(key)
-            }
+            localFlights.delete(key)
             return runWithFlight(key, loader, {
               ...options,
               signal: controller.signal,

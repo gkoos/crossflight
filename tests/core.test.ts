@@ -1491,6 +1491,27 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
+    it('propagates a shared failure to a caller that set its own timeout', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const error = await crossflight
+        .wrap(
+          'cancel:propagate',
+          async () => {
+            throw new Error('loader boom')
+          },
+          { timeoutMs: 1000 }
+        )
+        .catch(e => e)
+
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe('loader boom')
+
+      await crossflight.close()
+    })
+
     it('cancels the shared flight once the last caller leaves', async () => {
       const events: ObservedEvent[] = []
       const crossflight = createCrossflight({
