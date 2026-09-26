@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   createCrossflight,
@@ -1146,9 +1146,14 @@ describe('crossflight core', () => {
         crossflight.wrap('dedupe:timeout:waiter', async () => 'value')
       ).rejects.toBeInstanceOf(CoordinationTimeoutError)
 
-      const failed = failedEvents(events)
-      expect(failed).toHaveLength(1)
-      expect(failed[0]!.error).toBeInstanceOf(CoordinationTimeoutError)
+      // The caller settles at its deadline; the aborted flight reports its
+      // failure asynchronously once it observes the abort.
+      await vi.waitFor(() => {
+        expect(failedEvents(events)).toHaveLength(1)
+      })
+      expect(failedEvents(events)[0]!.error).toBeInstanceOf(
+        CoordinationTimeoutError
+      )
 
       await crossflight.close()
     })
@@ -1203,9 +1208,13 @@ describe('crossflight core', () => {
         })
       ).rejects.toThrow('pre-aborted')
 
-      const failed = failedEvents(events)
-      expect(failed).toHaveLength(1)
-      expect((failed[0]!.error as Error).message).toBe('pre-aborted')
+      // The caller settles at once; the aborted flight reports when it settles.
+      await vi.waitFor(() => {
+        expect(failedEvents(events)).toHaveLength(1)
+      })
+      expect((failedEvents(events)[0]!.error as Error).message).toBe(
+        'pre-aborted'
+      )
 
       await crossflight.close()
     })
@@ -1538,9 +1547,107 @@ describe('crossflight core', () => {
       joinerController.abort(new Error('joiner-cancelled'))
       await expect(joiner).rejects.toThrow('joiner-cancelled')
 
-      const failed = failedEvents(events)
-      expect(failed).toHaveLength(1)
-      expect((failed[0]!.error as Error).message).toBe('joiner-cancelled')
+      // The joiner settles at once; the aborted flight reports when it settles.
+      await vi.waitFor(() => {
+        expect(failedEvents(events)).toHaveLength(1)
+      })
+      expect((failedEvents(events)[0]!.error as Error).message).toBe(
+        'joiner-cancelled'
+      )
+
+      await crossflight.close()
+    })
+
+    it('settles a sole caller at its deadline even when the loader ignores the abort', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const error = await crossflight
+        .wrap('cancel:hang', () => new Promise(() => {}), { timeoutMs: 20 })
+        .catch(e => e)
+
+      expect(error).toBeInstanceOf(CoordinationTimeoutError)
+      expect((error as CoordinationTimeoutError).key).toBe('cancel:hang')
+
+      await crossflight.close()
+    })
+
+    it('starts a fresh flight instead of joining an aborted one', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+      const started = deferred()
+      const gate = deferred()
+      let loadRuns = 0
+
+      const controller = new AbortController()
+      const first = crossflight.wrap(
+        'cancel:aborted-join',
+        async () => {
+          loadRuns += 1
+          started.resolve()
+          await gate.promise
+          return 'first-value'
+        },
+        { signal: controller.signal }
+      )
+
+      // Cancel while the loader is still running, so the aborted flight stays
+      // in flight and ignores the abort signal.
+      await started.promise
+      controller.abort(new Error('first-cancelled'))
+      await expect(first).rejects.toThrow('first-cancelled')
+
+      // This must not join the aborted flight and inherit its cancellation.
+      const second = crossflight.wrap('cancel:aborted-join', async () => {
+        loadRuns += 1
+        return 'second-value'
+      })
+
+      gate.resolve()
+
+      await expect(second).resolves.toBe('second-value')
+      expect(loadRuns).toBe(2)
+
+      await crossflight.close()
+    })
+
+    it('does not apply the owner timeout to a shared ownership-loss retry', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return {
+              key,
+              async renew() {
+                return false // ownership lost right after the load
+              },
+              async complete() {},
+              async abandon() {},
+            }
+          }
+          return null // the retry waits for another owner
+        },
+        async waitForChange() {
+          await new Promise(resolve => setTimeout(resolve, 120))
+          await cache.set('cancel:retry', 'recovered-value')
+        },
+        async close() {},
+      }
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const owner = crossflight.wrap('cancel:retry', async () => 'original', {
+        timeoutMs: 30,
+      })
+      const joiner = crossflight.wrap('cancel:retry', async () => 'original', {
+        timeoutMs: 5000,
+      })
+
+      await expect(owner).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      await expect(joiner).resolves.toBe('recovered-value')
 
       await crossflight.close()
     })

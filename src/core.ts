@@ -71,10 +71,10 @@ export function createCrossflight({
   /**
    * Binds one caller to a shared flight. The caller's own signal and timeout
    * only ever cancel that caller's wait: while other callers are still waiting
-   * they leave the shared work untouched. A cancellation rejects with the
-   * caller's own reason, except when it is the last caller left, in which case
-   * the shared flight is aborted and its outcome is adopted so the flight's
-   * single failure is reported before the caller settles.
+   * they leave the shared work untouched. Cancelling always settles the caller
+   * with its own reason straight away; the shared flight is aborted as well
+   * once the last caller leaves, but the caller never waits for a loader that
+   * ignores the abort signal to observe it.
    */
   const attachCaller = <T>(
     key: string,
@@ -105,34 +105,22 @@ export function createCrossflight({
         detachAbort = undefined
       }
 
-      // Only the guarded last-caller branch cancels the shared work, so this
-      // runs at most once and needs no settled check of its own.
-      const adoptFlight = () => {
-        settled = true
-        cleanup()
-        record.promise.then(
-          (value) => resolve(value as T),
-          (error) => reject(error)
-        )
-      }
-
       const cancelCaller = (reason: unknown) => {
         if (settled) {
           return
         }
 
-        record.waitingCallers -= 1
-
-        if (record.waitingCallers === 0) {
-          // Last caller out cancels the work; adopt the flight so its failure
-          // event is emitted before this caller observes the rejection.
-          record.controller.abort(reason)
-          adoptFlight()
-          return
-        }
-
         settled = true
         cleanup()
+        record.waitingCallers -= 1
+
+        // The loader has no abort signal, so the flight may not observe the
+        // abort for a while. This caller still settles with its own reason at
+        // once; the aborted flight reports its failure event when it settles.
+        if (record.waitingCallers === 0) {
+          record.controller.abort(reason)
+        }
+
         reject(reason)
       }
 
@@ -188,7 +176,10 @@ export function createCrossflight({
     options: WrapOptions = {}
   ): Promise<T> => {
     const existing = localFlights.get(key)
-    if (existing) {
+    // An aborted record is a flight that is winding down; joining it would hand
+    // its caller the previous caller's cancellation reason. Start a fresh one
+    // instead - the finally identity check keeps the replacement safe.
+    if (existing && !existing.controller.signal.aborted) {
       emit({ type: 'local_join', key })
       existing.waitingCallers += 1
       return attachCaller<T>(key, existing, options)
@@ -233,7 +224,7 @@ export function createCrossflight({
     const flight = (async (): Promise<T> => {
       const startedAt = Date.now()
 
-      try {
+      const attempt = async (): Promise<T> => {
         const cached = await cache.get<T>(key)
         if (cached.hit) {
           emit({ type: 'hit', key })
@@ -366,13 +357,10 @@ export function createCrossflight({
             const ownershipLost = new OwnershipLostError(key)
             emit({ type: 'failed', key, error: ownershipLost })
             await lease.abandon().catch(() => undefined)
-            // Remove from localFlights before retrying so the recursive call
-            // does not join its own outer flight and deadlock.
-            localFlights.delete(key)
-            return runWithFlight(key, loader, {
-              ...options,
-              signal: controller.signal,
-            })
+            // Retry the whole attempt on this flight: the record keeps its
+            // caller set and controller, so no caller's timeout leaks into the
+            // shared retry.
+            return attempt()
           }
 
           if (controller.signal.aborted) {
@@ -388,12 +376,16 @@ export function createCrossflight({
           // Reported once by the outer catch.
           throw error
         }
+      }
+
+      try {
+        return await attempt()
       } catch (error) {
         emit({ type: 'failed', key, error })
         throw error
       } finally {
-        // Only remove our own record: a recursive ownership-loss retry may
-        // already have installed a new flight for the same key.
+        // Only remove our own record: a caller that found it aborted may have
+        // replaced it with a fresh flight for the same key.
         if (localFlights.get(key) === record) {
           localFlights.delete(key)
         }
