@@ -360,6 +360,36 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('treats connection is closed acquire errors as closed coordinator errors', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const mutableClient = client as MutableEvalClient
+
+    mutableClient.eval = async () => {
+      throw new Error('Connection is closed')
+    }
+
+    await expect(coordinator.acquire('redis:closed:is-closed', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('treats connection closed acquire errors as closed coordinator errors', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const mutableClient = client as MutableEvalClient
+
+    mutableClient.eval = async () => {
+      throw new Error('Socket connection closed by peer')
+    }
+
+    await expect(coordinator.acquire('redis:closed:connection-closed', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('does not mask non-closed acquire errors that only mention connection', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)
@@ -651,6 +681,33 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('ignores a failed unsubscribe when a wait is cancelled', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const key = 'redis:wait:unsubscribe-failure:key'
+    const channel = 'crossflight:change:' + createHash('sha256').update(key).digest('hex')
+    const unsubscribeSpy = vi
+      .spyOn(subscriptionClient, 'unsubscribe')
+      .mockRejectedValue(new Error('unsubscribe failed'))
+    const controller = new AbortController()
+
+    internals.subscribedChannels.add(channel)
+    const waiting = coordinator.waitForChange(key, {
+      signal: controller.signal,
+      timeoutMs: 5_000,
+    })
+    controller.abort()
+
+    await expect(waiting).rejects.toThrow(/aborted/i)
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('does not close the caller-owned redis client when coordinator closes', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)
@@ -737,6 +794,26 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     }
 
     await expect(coordinator.close()).resolves.toBeUndefined()
+    client.disconnect()
+    subscriptionClient.disconnect()
+  })
+
+  it('skips quitting a subscription client that is already closed', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const quitSpy = vi.spyOn(subscriptionClient, 'quit')
+
+    Object.defineProperty(subscriptionClient, 'status', {
+      configurable: true,
+      value: 'close',
+    })
+
+    await expect(coordinator.close()).resolves.toBeUndefined()
+    expect(quitSpy).not.toHaveBeenCalled()
+
+    quitSpy.mockRestore()
     client.disconnect()
     subscriptionClient.disconnect()
   })
