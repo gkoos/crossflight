@@ -92,7 +92,7 @@ await crossflight.close()
 await redis.quit()
 ```
 
-See the [Redis coordinator guide](docs/redis-coordinator.md) for the built-in distributed coordination behavior, key layout, and lease semantics.
+See the [Redis coordinator guide](docs/redis-coordinator.md) for the built-in distributed coordination behavior, key layout, lease semantics, and running against a Redis Cluster.
 
 ## Adapters
 

@@ -1,4 +1,4 @@
-import { Redis as IORedis } from 'ioredis'
+import { Cluster as IORedisCluster, Redis as IORedis } from 'ioredis'
 import { createHash, randomUUID } from 'node:crypto'
 
 import type {
@@ -7,6 +7,13 @@ import type {
   Lease,
   WaitOptions,
 } from '../types.js'
+
+/**
+ * The clients the coordinator runs on. `Redis` and `Cluster` both satisfy
+ * it - the coordinator only issues single-key commands and pub/sub - so a
+ * cluster client is a drop-in replacement for a single-node one.
+ */
+export type RedisClient = IORedis | IORedisCluster
 
 export interface RedisCoordinatorOptions {
   namespace?: string
@@ -23,6 +30,28 @@ export class RedisCommandTimeoutError extends Error {
 
 function defaultHashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
+}
+
+/**
+ * A cluster client is recognised by `nodes()`, which only `Cluster` has: it
+ * decides how the separate pub/sub connection has to be built.
+ */
+function isClusterClient(client: RedisClient): client is IORedisCluster {
+  return typeof (client as IORedisCluster).nodes === 'function'
+}
+
+/**
+ * A subscribed connection cannot run ordinary commands, so the coordinator
+ * always owns a second connection. A single-node client is rebuilt from its
+ * own options, a cluster client is duplicated so the new connection starts
+ * from the same nodes and options.
+ */
+function createSubscriberClient(client: RedisClient): RedisClient {
+  if (isClusterClient(client)) {
+    return client.duplicate()
+  }
+
+  return new IORedis(client.options)
 }
 
 function isClosedConnectionMessage(message: string): boolean {
@@ -73,7 +102,7 @@ class RedisLease implements Lease {
   constructor(
     public readonly key: string,
     private readonly ownerToken: string,
-    private readonly client: IORedis,
+    private readonly client: RedisClient,
     private readonly ttlMs: number,
     private readonly changeChannel: string,
     private readonly commandTimeoutMs?: number
@@ -174,7 +203,7 @@ export class RedisCoordinator implements Coordinator {
   private readonly subscribedChannels = new Set<string>()
   private readonly channelWaiters = new Map<string, number>()
   private readonly pendingWaits = new Set<() => void>()
-  private readonly subscriptionClient: IORedis
+  private readonly subscriptionClient: RedisClient
   private closed = false
   private commandEnded = false
   private commandReconnecting = false
@@ -200,13 +229,13 @@ export class RedisCoordinator implements Coordinator {
   }
 
   constructor(
-    private readonly client: IORedis,
+    private readonly client: RedisClient,
     options: RedisCoordinatorOptions = {}
   ) {
     this.namespace = options.namespace ?? 'crossflight'
     this.hashKey = options.hashKey ?? defaultHashKey
     this.commandTimeoutMs = options.commandTimeoutMs
-    this.subscriptionClient = new IORedis(client.options)
+    this.subscriptionClient = createSubscriberClient(client)
 
     this.client.on('error', this.handleCommandError)
     this.client.on('ready', this.handleCommandReady)
@@ -216,12 +245,18 @@ export class RedisCoordinator implements Coordinator {
     this.subscriptionClient.on('end', this.handleSubscriptionEnd)
   }
 
+  /**
+   * The lease key and the change channel of one logical key share a `{...}`
+   * hash tag, so Redis Cluster routes both to the same slot: a waiter
+   * subscribes on the node that holds its owner's lease, and a future
+   * multi-key script would still be valid on a cluster.
+   */
   private resolveLeaseKey(key: string): string {
-    return `${this.namespace}:flight:${this.hashKey(key)}`
+    return `${this.namespace}:{${this.hashKey(key)}}:flight`
   }
 
   private resolveChannel(key: string): string {
-    return `${this.namespace}:change:${this.hashKey(key)}`
+    return `${this.namespace}:{${this.hashKey(key)}}:change`
   }
 
   /**
@@ -496,8 +531,13 @@ export class RedisCoordinator implements Coordinator {
   }
 }
 
+/**
+ * Works with a single-node `Redis` and with an ioredis `Cluster`: the
+ * coordinator only needs single-key commands and pub/sub, and a cluster
+ * client routes both on its own.
+ */
 export function redisCoordinator(
-  client: IORedis,
+  client: RedisClient,
   options: RedisCoordinatorOptions = {}
 ): Coordinator {
   return new RedisCoordinator(client, options)
