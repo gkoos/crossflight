@@ -35,12 +35,15 @@ export interface Coordinator {
 export type CoordinationFailureMode = 'fail-closed' | 'fail-open'
 
 export type CrossflightEvent =
-  | { type: 'hit'; key: string }
+  | { type: 'hit'; key: string; waitedMs?: number }
   | { type: 'miss'; key: string }
   | { type: 'local_join'; key: string }
   | { type: 'distributed_join'; key: string }
   | { type: 'ownership_acquired'; key: string }
-  | { type: 'completed'; key: string; durationMs: number }
+  | { type: 'cancelled'; key: string; reason: unknown }
+  | { type: 'fallback'; key: string; reason: unknown }
+  | { type: 'wait_exhausted'; key: string; attempts: number }
+  | { type: 'completed'; key: string; durationMs: number; waitedMs?: number }
   | { type: 'failed'; key: string; error: unknown }
   | { type: 'renewal_failed'; key: string; error: unknown }
 

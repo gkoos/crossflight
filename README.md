@@ -170,16 +170,21 @@ The `onEvent` hook receives a `CrossflightEvent` on every significant state chan
 
 | Event type | Trigger | Extra fields |
 | --- | --- | --- |
-| `hit` | Cache hit — value returned without coordination | — |
+| `hit` | Cache hit — value returned without coordination | `waitedMs` |
 | `miss` | Cache miss — coordination starting | — |
 | `local_join` | Caller joined an existing in-process flight for the same key | — |
 | `distributed_join` | Caller is waiting for a remote owner to complete | — |
+| `wait_exhausted` | Retry budget ran out while the lease stayed contended | `attempts` |
 | `ownership_acquired` | This process acquired the lease and will run the loader | — |
-| `completed` | Owner finished, result written to cache | `durationMs` |
+| `fallback` | `fail-open` ran the loader without owning the lease | `reason` |
+| `cancelled` | This caller's own wait ended (`signal` fired or `timeoutMs` elapsed) | `reason` |
+| `completed` | Owner finished, result written to cache | `durationMs`, `waitedMs` |
 | `failed` | Any failure: coordination error, loader error, or ownership loss | `error` |
 | `renewal_failed` | Periodic lease renewal threw during owner execution; owner will abort | `error` |
 
 Each failure produces exactly one `failed` event. Coordination errors that surface from an inner catch are not reported again when they reach the caller, so `onEvent` consumers can count `failed` events directly without deduplicating.
+
+`waitedMs` reports how long the caller waited on another owner before the value arrived, and is `0` when the first read hit — so you can measure whether coalescing actually saves loader work. `fallback` counts the calls that ran the loader without owning the lease, and `wait_exhausted` shows when the retry budget, rather than the caller's own timeout, ended the wait.
 
 `renewal_failed` fires immediately before the owner aborts. It is always followed by a `failed` event. Use it to distinguish renewal-specific failures from loader failures in your observability tooling.
 
