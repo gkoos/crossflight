@@ -291,6 +291,11 @@ export function createCrossflight({
     const flight = (async (): Promise<T> => {
       const startedAt = Date.now()
 
+      // Accumulated distributed-wait time: cache reads, acquire probes and a
+      // previous attempt of this flight (after ownership loss) are not waits on
+      // another owner, so they stay out of the reported metric.
+      let waitedMs = 0
+
       const attempt = async (): Promise<T> => {
         const cached = await cache.get<T>(key)
         if (cached.hit) {
@@ -320,9 +325,13 @@ export function createCrossflight({
               throw controller.signal.reason
             }
 
+            const waitStartedAt = Date.now()
+
             try {
               await waitForRetry(key, attempt, controller.signal)
             } catch (error) {
+              waitedMs += Date.now() - waitStartedAt
+
               if (controller.signal.aborted) {
                 throw controller.signal.reason
               }
@@ -337,11 +346,13 @@ export function createCrossflight({
               throw error
             }
 
+            waitedMs += Date.now() - waitStartedAt
+
             attempt += 1
 
             const retry = await cache.get<T>(key)
             if (retry.hit) {
-              emit({ type: 'hit', key, waitedMs: Date.now() - startedAt })
+              emit({ type: 'hit', key, waitedMs })
               return retry.value
             }
 
@@ -382,7 +393,7 @@ export function createCrossflight({
             // Another owner filled the cache while we were acquiring, so this
             // lease protects nothing: release it rather than hold it to its TTL.
             await lease.abandon().catch(() => undefined)
-            emit({ type: 'hit', key, waitedMs: Date.now() - startedAt })
+            emit({ type: 'hit', key, waitedMs })
             return recheck.value
           }
 
@@ -438,7 +449,6 @@ export function createCrossflight({
 
           scheduleRenewal()
 
-          const loadStartedAt = Date.now()
           let value: T
           try {
             value = await runLoader(loader, controller.signal)
@@ -476,7 +486,7 @@ export function createCrossflight({
             type: 'completed',
             key,
             durationMs: Date.now() - startedAt,
-            waitedMs: loadStartedAt - startedAt,
+            waitedMs,
           })
           return value
         } catch (error) {

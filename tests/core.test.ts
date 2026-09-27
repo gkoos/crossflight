@@ -1051,6 +1051,7 @@ describe('crossflight core', () => {
       reason?: unknown
       attempts?: number
       waitedMs?: number
+      durationMs?: number
     }
 
     const findEvent = (events: unknown[], type: string): ObservedEvent => {
@@ -1232,6 +1233,91 @@ describe('crossflight core', () => {
       expect(completed.waitedMs).toBeGreaterThanOrEqual(25)
       expect(hits).toHaveLength(1)
       expect(hits[0]?.waitedMs).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('excludes the previous attempt from waitedMs after ownership loss', async () => {
+      const cache = new MemoryCache()
+      let renewCalls = 0
+      let loadCalls = 0
+
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              return renewCalls > 1
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:ownership-lost', async () => {
+          loadCalls += 1
+          if (loadCalls === 1) {
+            await new Promise(resolve => setTimeout(resolve, 60))
+          }
+
+          return `value-${loadCalls}`
+        })
+      ).resolves.toBe('value-2')
+
+      const completed = findEvent(events, 'completed')
+      expect(completed.durationMs ?? 0).toBeGreaterThanOrEqual(60)
+      expect(completed.waitedMs).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('does not count a slow acquire as waitedMs on a recheck hit', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire(key: string) {
+          // A slow acquire that loses the race: the value lands while the lease
+          // is being taken, so this caller never waited on another owner.
+          await new Promise(resolve => setTimeout(resolve, 30))
+          await cache.set(key, 'other-owner-value')
+
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:recheck-hit', async () => 'value')
+      ).resolves.toBe('other-owner-value')
+
+      const hit = findEvent(events, 'hit')
+      expect(hit.waitedMs).toBe(0)
 
       await crossflight.close()
     })
