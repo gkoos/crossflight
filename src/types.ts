@@ -115,9 +115,15 @@ export interface CrossflightOptions {
    * While enabled, every value Crossflight writes goes into the reserved
    * envelope `{ "__crossflight_envelope__": 1, value }` and is unwrapped on
    * read, so a loader value can be anything - including an object that looks
-   * like the envelope - and still come back exactly as it was. Raw values
-   * written by a process without the option still read back as they were, but
-   * every process sharing the cache has to agree on this setting.
+   * like the envelope - and still come back exactly as it was. Only a stored
+   * value of exactly that shape is unwrapped, so an object that carries the
+   * reserved name next to fields of its own is returned as it was stored.
+   *
+   * Shape is the only discriminator there is: a raw value of exactly the
+   * reserved shape - written before this option was turned on, or by a
+   * process that has it off - is indistinguishable from an envelope. Migrate
+   * or namespace the keys of an existing cache before enabling this, and have
+   * every process sharing that cache agree on the setting.
    */
   cacheUndefined?: boolean
 }

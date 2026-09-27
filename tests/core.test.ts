@@ -1629,6 +1629,119 @@ describe('crossflight core', () => {
 
       await crossflight.close()
     })
+
+    it('returns a stored object that carries the reserved name next to its own fields', async () => {
+      const cache = adapterLikeCache()
+      const business = { __crossflight_envelope__: 1, sku: 'sku-1', price: 42 }
+      cache.values.set('undefined:business', business)
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        cacheUndefined: true,
+      })
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('undefined:business', () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).resolves.toEqual(business)
+
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('returns a stored object that carries the reserved name with a `value` of its own', async () => {
+      const cache = adapterLikeCache()
+      const business = {
+        __crossflight_envelope__: 1,
+        value: 'nested',
+        currency: 'USD',
+      }
+      cache.values.set('undefined:business-value', business)
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        cacheUndefined: true,
+      })
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('undefined:business-value', () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).resolves.toEqual(business)
+
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('still unwraps a stored value of exactly the reserved shape', async () => {
+      // Shape is the only discriminator there is: a raw value that is exactly
+      // an envelope reads as encoded data, because nothing could tell it apart
+      // from one Crossflight wrote (see `cacheUndefined`).
+      const cache = adapterLikeCache()
+      cache.values.set('undefined:exact', {
+        __crossflight_envelope__: 1,
+        value: 'encoded',
+      })
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        cacheUndefined: true,
+      })
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('undefined:exact', () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).resolves.toBe('encoded')
+
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('returns a stored value whose marker is inherited rather than its own', async () => {
+      class Business {
+        get __crossflight_envelope__() {
+          return 1
+        }
+
+        sku = 'sku-1'
+      }
+
+      const cache = adapterLikeCache()
+      const business = new Business()
+      cache.values.set('undefined:prototype', business)
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        cacheUndefined: true,
+      })
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('undefined:prototype', () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).resolves.toBe(business)
+
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
   })
 
   describe('flight deadline', () => {
