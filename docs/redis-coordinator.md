@@ -143,6 +143,7 @@ The Redis coordinator is designed to avoid the usual distributed lock mistakes:
 - waiters time out instead of hanging forever
 - closed or disconnected clients are rejected as coordinator errors
 - a transient connection error, by contrast, is recoverable: the coordinator resumes as soon as the client reports `ready`, and a broken subscription connection only blocks waiting - `acquire()` keeps working while the command connection is healthy
+- a failed subscription rejects that waiter with a coordinator error instead of leaving it pending
 - ownership and notifications are kept separate so the lease can expire safely if a process crashes
 
 ## Related docs

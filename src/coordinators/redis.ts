@@ -51,20 +51,22 @@ async function withCommandTimeout<T>(
     return await run()
   }
 
-  let cancelTimeout = () => {}
-  const timeoutPromise = new Promise<never>((_, reject) => {
+  return await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new RedisCommandTimeoutError(operation, timeoutMs))
     }, timeoutMs)
 
-    cancelTimeout = () => clearTimeout(timer)
+    run().then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
   })
-
-  try {
-    return await Promise.race([run(), timeoutPromise])
-  } finally {
-    cancelTimeout()
-  }
 }
 
 class RedisLease implements Lease {
@@ -264,11 +266,15 @@ export class RedisCoordinator implements Coordinator {
     }
   }
 
-  private handleClosedRedisError(error: unknown): never | void {
+  /**
+   * Translates a connection-level failure into the error the coordinator should
+   * surface. Never throws, so it is safe to use inside promise callbacks.
+   */
+  private coordinatorError(error: unknown): unknown {
     const message = error instanceof Error ? error.message : String(error)
-    if (isClosedConnectionMessage(message)) {
-      throw new Error('Redis coordinator is closed')
-    }
+    return isClosedConnectionMessage(message)
+      ? new Error('Redis coordinator is closed')
+      : error
   }
 
   async acquire(key: string, options?: AcquireOptions): Promise<Lease | null> {
@@ -318,8 +324,7 @@ export class RedisCoordinator implements Coordinator {
         this.commandTimeoutMs
       )
     } catch (error) {
-      this.handleClosedRedisError(error)
-      throw error
+      throw this.coordinatorError(error)
     }
   }
 
@@ -387,8 +392,7 @@ export class RedisCoordinator implements Coordinator {
         })
         .catch((error) => {
           cleanup()
-          this.handleClosedRedisError(error)
-          reject(error)
+          reject(this.coordinatorError(error))
         })
     })
   }
