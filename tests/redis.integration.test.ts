@@ -600,6 +600,112 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('reports an acquisition without waiting for a stalled notification', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    // The command timeout is larger than the lease, so an acquisition that
+    // waited for the wake-up would report a lease that has already expired.
+    const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
+
+    const key = 'redis:acquire:notify:stall:key'
+    const publish = vi
+      .spyOn(client, 'publish')
+      .mockImplementation(() => new Promise<never>(() => {}))
+
+    const startedAt = Date.now()
+    const lease = await coordinator.acquire(key, { ttlMs: 400 })
+    const elapsed = Date.now() - startedAt
+
+    expect(lease).not.toBeNull()
+    expect(publish).toHaveBeenCalled()
+    expect(elapsed).toBeLessThan(300)
+
+    // The wake-up never settled, yet the lease we were handed is the live one:
+    // a contender cannot take over a lease the acquisition already holds.
+    const contender = await coordinator.acquire(key, { ttlMs: 400 })
+    expect(contender).toBeNull()
+
+    publish.mockRestore()
+
+    await lease!.abandon()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('reports a renewal without waiting for a stalled notification', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
+
+    const key = 'redis:renew:notify:stall:key'
+    const lease = await coordinator.acquire(key, { ttlMs: 400 })
+    expect(lease).not.toBeNull()
+
+    const publish = vi
+      .spyOn(client, 'publish')
+      .mockImplementation(() => new Promise<never>(() => {}))
+
+    const startedAt = Date.now()
+    await expect(lease!.renew()).resolves.toBe(true)
+    const elapsed = Date.now() - startedAt
+
+    expect(publish).toHaveBeenCalled()
+    expect(elapsed).toBeLessThan(300)
+
+    // The extension was applied, so the key is still ours even though nobody
+    // was told about it yet.
+    const contender = await coordinator.acquire(key, { ttlMs: 400 })
+    expect(contender).toBeNull()
+
+    publish.mockRestore()
+
+    await lease!.abandon()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('reports a release without waiting for a stalled notification', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
+
+    const completedKey = 'redis:complete:notify:stall:key'
+    const completed = await coordinator.acquire(completedKey, { ttlMs: 4000 })
+    expect(completed).not.toBeNull()
+
+    const abandonedKey = 'redis:abandon:notify:stall:key'
+    const abandoned = await coordinator.acquire(abandonedKey, { ttlMs: 4000 })
+    expect(abandoned).not.toBeNull()
+
+    const publish = vi
+      .spyOn(client, 'publish')
+      .mockImplementation(() => new Promise<never>(() => {}))
+
+    const startedAt = Date.now()
+    await expect(completed!.complete()).resolves.toBeUndefined()
+    await expect(abandoned!.abandon()).resolves.toBeUndefined()
+    const elapsed = Date.now() - startedAt
+
+    expect(publish).toHaveBeenCalled()
+    expect(elapsed).toBeLessThan(300)
+
+    publish.mockRestore()
+
+    // Both keys are free as soon as the release reports back, so a successor
+    // takes over at once instead of waiting for a notification that never came.
+    const completedSuccessor = await coordinator.acquire(completedKey, {
+      ttlMs: 4000,
+    })
+    const abandonedSuccessor = await coordinator.acquire(abandonedKey, {
+      ttlMs: 4000,
+    })
+    expect(completedSuccessor).not.toBeNull()
+    expect(abandonedSuccessor).not.toBeNull()
+
+    await completedSuccessor!.abandon()
+    await abandonedSuccessor!.abandon()
+    await coordinator.close()
+    await client.quit()
+  })
+
+
   it('throws AbortError when acquire is called with an already-aborted signal', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)

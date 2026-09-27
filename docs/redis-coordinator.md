@@ -82,7 +82,7 @@ await crossflight.wrap('product:42', loadProduct, {
 
 This is important because waiting callers must not block forever if Redis Pub/Sub is noisy, flaky, or missing a notification.
 
-Change notifications are best effort: they only wake waiters early, and a waiter whose notification is missed settles on its own timeout instead. A failed or timed-out publish therefore never decides an ownership change by itself. An acquisition that already set the lease key keeps its lease (and releases it normally when it is done), and a `renew()`, `complete()` or `abandon()` whose Lua script already mutated the key still reports its own outcome.
+Change notifications are best effort: they only wake waiters early, and a waiter whose notification is missed settles on its own timeout instead. A notification is issued on the same connection as the mutation but is never awaited, so a failed, slow or stalled publish cannot decide, delay or invalidate an ownership change: an acquisition that already set the lease key reports its lease at once (and releases it normally when it is done), and a `renew()`, `complete()` or `abandon()` whose Lua script already mutated the key reports its own outcome without waiting for the wake-up. `commandTimeoutMs` therefore guards the lease scripts and the subscribe path, not the notification itself.
 
 ## Configuration
 
