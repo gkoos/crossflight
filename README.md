@@ -126,17 +126,28 @@ All options passed to `createCrossflight()`:
 | `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [fail-open](#fail-open)) |
 | `defaultTimeoutMs` | `number` | none | Per-call timeout in ms |
 | `defaultTtlMs` | `number` | `30000` | Default lease TTL when a call does not pass `leaseTtlMs` (independent of the cache `ttl`) |
+| `defaultFlightDeadlineMs` | `number` | none | Whole-flight deadline in ms; when it passes the flight is aborted, its lease abandoned, and late callers rejected (see [shared flight deadline](#shared-flight-deadline)) |
 | `maxRetryAttempts` | `number` | `64` | Distributed retry limit before throwing `CoordinationTimeoutError` |
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
 | `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` by writing every value into a reserved envelope (see [undefined results](#undefined-results)) |
 
-Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
+Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `flightDeadlineMs`, `timeoutMs`, `failureMode`, `signal`.
 
 The cache lifetime and the lease lifetime are separate: `ttl` controls only how long the value is cached, while the coordination lease uses `leaseTtlMs` when a call passes it, otherwise `defaultTtlMs`. A short cache lifetime therefore cannot expire the lease mid-load, and a long one cannot keep a crashed owner's lease alive. Lease TTLs are floored at 50 ms - twice the minimum renewal interval - so a lease always outlives at least one renewal.
 
 The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
+
+### Shared flight deadline
+
+By default a flight has no deadline of its own: each caller's `timeoutMs` bounds only that caller's wait, so a second caller joining a slow flight gets a fresh full timeout and the group's latency is bounded only by the loader.
+
+`defaultFlightDeadlineMs` puts one budget on the whole flight, measured from the moment the flight is created. When it passes, the flight is aborted: callers waiting on it reject with `CoordinationTimeoutError`, the owner abandons its lease, and a caller that arrives afterwards is rejected immediately instead of starting a new flight - which is what keeps a deadline from becoming a stampede. `flightDeadlineMs` overrides it per call, and the call that creates a flight decides the budget its joiners inherit.
+
+The deadline is a latency budget rather than a coordination failure, so it applies in both failure modes: `fail-open` cannot fall back to running the loader, because the flight's signal is already aborted - a loader that received that signal will have stopped, or will stop as soon as it observes it. A caller's own `timeoutMs` still bounds that caller, `maxRetryAttempts` still bounds the distributed retry loop, and `leaseTtlMs` still bounds ownership; the flight deadline is what bounds the flight as a whole.
+
+A flight that is already inside a step which cannot be interrupted - a cache write, a command already in flight - still finishes and hands its value to the callers still attached to it. The deadline bounds how long the flight waits for work, and aborting it is what releases the lease.
 
 ### Undefined results
 

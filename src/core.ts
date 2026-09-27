@@ -96,6 +96,8 @@ interface Flight {
   controller: AbortController
   /** Callers currently waiting that have not cancelled. */
   waitingCallers: number
+  /** Absolute time the whole flight gives up, or undefined for no deadline. */
+  deadlineAt?: number
 }
 
 /**
@@ -113,6 +115,7 @@ export function createCrossflight({
   coordinator,
   defaultTimeoutMs,
   defaultTtlMs = DEFAULT_TTL_MS,
+  defaultFlightDeadlineMs,
   maxRetryAttempts = DEFAULT_MAX_RETRY_ATTEMPTS,
   retryBackoff = DEFAULT_RETRY_BACKOFF,
   failureMode = 'fail-closed',
@@ -311,6 +314,17 @@ export function createCrossflight({
     options: WrapOptions = {}
   ): Promise<T> => {
     const existing = localFlights.get(key)
+
+    // A caller that arrives after the flight's deadline must not start a new
+    // flight - that is how a deadline turns into a stampede - and must not join
+    // a flight that is already winding down.
+    if (
+      existing?.deadlineAt !== undefined &&
+      Date.now() >= existing.deadlineAt
+    ) {
+      throw new CoordinationTimeoutError(key)
+    }
+
     // An aborted record is a flight that is winding down; joining it would hand
     // its caller the previous caller's cancellation reason. Start a fresh one
     // instead - the finally identity check keeps the replacement safe.
@@ -356,6 +370,21 @@ export function createCrossflight({
       promise: Promise.resolve(),
       controller,
       waitingCallers: 1,
+    }
+
+    const flightDeadlineMs = options.flightDeadlineMs ?? defaultFlightDeadlineMs
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+
+    if (flightDeadlineMs !== undefined && flightDeadlineMs > 0) {
+      record.deadlineAt = Date.now() + flightDeadlineMs
+      // The deadline is a latency budget for the whole flight rather than a
+      // coordination failure, so it aborts in every failure mode: a fail-open
+      // fallback could not run on an already aborted signal anyway.
+      deadlineTimer = setTimeout(() => {
+        record.controller.abort(new CoordinationTimeoutError(key))
+      }, flightDeadlineMs)
+      // Do not keep an exiting process alive; the timer still fires while it runs.
+      deadlineTimer.unref()
     }
 
     const flight = (async (): Promise<T> => {
@@ -572,6 +601,10 @@ export function createCrossflight({
         emit({ type: 'failed', key, error })
         throw error
       } finally {
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer)
+        }
+
         // Only remove our own record: a caller that found it aborted may have
         // replaced it with a fresh flight for the same key.
         if (localFlights.get(key) === record) {

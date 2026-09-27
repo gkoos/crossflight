@@ -1491,6 +1491,177 @@ describe('crossflight core', () => {
     })
   })
 
+  describe('flight deadline', () => {
+    // A cache whose write is slow, so a flight can still be pending - and past
+    // its deadline - while another caller arrives.
+    const slowWriteCache = (setDelayMs: number) => {
+      const values = new Map<string, unknown>()
+
+      return {
+        values,
+        async get<T>(key: string) {
+          const value = values.get(key) as T | undefined
+          if (value === undefined) {
+            return { hit: false as const }
+          }
+
+          return { hit: true as const, value }
+        },
+        async set<T>(key: string, value: T) {
+          await new Promise(resolve => setTimeout(resolve, setDelayMs))
+          values.set(key, value)
+        },
+      }
+    }
+
+    const stall = (signal: AbortSignal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        })
+      })
+
+    it('leaves a flight that finishes inside its deadline alone', async () => {
+      const cache = slowWriteCache(0)
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 500,
+        onEvent: event => events.push(event),
+      })
+
+      const results = await Promise.all([
+        crossflight.wrap('deadline:fast', async () => 'value'),
+        crossflight.wrap('deadline:fast', async () => 'value'),
+      ])
+
+      expect(results).toEqual(['value', 'value'])
+      expect(
+        events.some(event => (event as { type: string }).type === 'failed')
+      ).toBe(false)
+
+      await crossflight.close()
+    })
+
+    it('aborts the flight and rejects its callers when the deadline passes', async () => {
+      const cache = slowWriteCache(0)
+      const events: unknown[] = []
+      let loaderSignal: AbortSignal | undefined
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 30,
+        onEvent: event => events.push(event),
+      })
+
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap('deadline:stall', signal => {
+          loaderSignal = signal
+          return stall(signal)
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(Date.now() - startedAt).toBeLessThan(200)
+      expect(loaderSignal?.aborted).toBe(true)
+      expect(
+        events.some(
+          event =>
+            (event as { type: string }).type === 'failed' &&
+            (event as { error?: unknown }).error instanceof
+              CoordinationTimeoutError
+        )
+      ).toBe(true)
+
+      await crossflight.close()
+    })
+
+    it('shares the deadline with callers that join later', async () => {
+      const cache = slowWriteCache(0)
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 40,
+      })
+
+      const first = crossflight.wrap('deadline:shared', stall)
+      await new Promise(resolve => setTimeout(resolve, 20))
+
+      const joinedAt = Date.now()
+      const second = crossflight.wrap('deadline:shared', stall, {
+        timeoutMs: 5000,
+      })
+
+      await expect(first).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      await expect(second).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      // The joiner is bounded by the flight's deadline, not its own 5s timeout.
+      expect(Date.now() - joinedAt).toBeLessThan(200)
+
+      await crossflight.close()
+    })
+
+    it('rejects a caller that arrives after the deadline instead of starting a new flight', async () => {
+      const cache = slowWriteCache(120)
+      const events: unknown[] = []
+      let loadRuns = 0
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 20,
+        onEvent: event => events.push(event),
+      })
+
+      const first = crossflight.wrap('deadline:late', async () => {
+        loadRuns += 1
+        return 'value'
+      })
+
+      // The first caller is inside the slow cache write when the deadline
+      // passes, so its flight is still registered.
+      await new Promise(resolve => setTimeout(resolve, 40))
+
+      const late = crossflight.wrap('deadline:late', async () => {
+        loadRuns += 1
+        return 'other'
+      })
+
+      await expect(late).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      await expect(first).resolves.toBe('value')
+      expect(loadRuns).toBe(1)
+      // The late caller is rejected on the spot: it neither runs the loader nor
+      // starts a flight of its own, which would emit a second miss.
+      expect(
+        events.filter(event => (event as { type: string }).type === 'miss')
+      ).toHaveLength(1)
+
+      await crossflight.close()
+    })
+
+    it('does not fall back to the loader in fail-open mode', async () => {
+      const cache = slowWriteCache(0)
+      let loadRuns = 0
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 30,
+        failureMode: 'fail-open',
+      })
+
+      await expect(
+        crossflight.wrap('deadline:fail-open', signal => {
+          loadRuns += 1
+          return stall(signal)
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(loadRuns).toBe(1)
+
+      await crossflight.close()
+    })
+  })
+
   describe('failed event deduplication', () => {
     type ObservedEvent = { type: string; key?: string; error?: unknown }
 
