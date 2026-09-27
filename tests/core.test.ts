@@ -618,10 +618,12 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
-  it('returns cached value found during ownership recheck without running the loader', async () => {
+  it('returns cached value found during ownership recheck and releases the lease', async () => {
     const cache = new MemoryCache()
     let leaseAcquired = false
     let loaderRan = false
+    let abandonCalls = 0
+    let completeCalls = 0
 
     const coordinator = {
       async acquire(key: string) {
@@ -632,8 +634,8 @@ describe('crossflight core', () => {
         return {
           key,
           async renew() { return true },
-          async complete() {},
-          async abandon() {},
+          async complete() { completeCalls += 1 },
+          async abandon() { abandonCalls += 1 },
         }
       },
       async waitForChange() {},
@@ -649,6 +651,38 @@ describe('crossflight core', () => {
 
     expect(result).toBe('populated-between')
     expect(loaderRan).toBe(false)
+    // The lease protects nothing once another owner cached the value.
+    expect(abandonCalls).toBe(1)
+    expect(completeCalls).toBe(0)
+    await crossflight.close()
+  })
+
+  it('does not retain ownership when the recheck finds a cached value', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const originalAcquire = coordinator.acquire.bind(coordinator)
+
+    // Fill the cache between acquiring ownership and the recheck.
+    coordinator.acquire = async (key: string) => {
+      const lease = await originalAcquire(key)
+      if (lease) {
+        await cache.set(key, 'populated-between')
+      }
+
+      return lease
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator })
+    let loaderRan = false
+
+    const result = await crossflight.wrap('recheck:release:key', async () => {
+      loaderRan = true
+      return 'from-loader'
+    })
+
+    expect(result).toBe('populated-between')
+    expect(loaderRan).toBe(false)
+    expect(coordinator.owners.get('recheck:release:key')).toBeUndefined()
     await crossflight.close()
   })
 
