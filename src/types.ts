@@ -80,4 +80,12 @@ export interface CrossflightOptions {
   failureMode?: CoordinationFailureMode
   onEvent?: (event: CrossflightEvent) => void
   onEventError?: (error: unknown) => void
+  /**
+   * Cache a loader result of `undefined`. The built-in adapters report a
+   * stored `undefined` as a miss, so without this a loader that resolves
+   * `undefined` runs again for every caller. Crossflight stores a small marked
+   * envelope in place of the value and unwraps it on read; values you cached
+   * yourself are passed through untouched.
+   */
+  cacheUndefined?: boolean
 }

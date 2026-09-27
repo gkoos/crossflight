@@ -130,12 +130,19 @@ All options passed to `createCrossflight()`:
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
+| `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` instead of re-running the loader for every caller (see [undefined results](#undefined-results)) |
 
 Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
 
 The cache lifetime and the lease lifetime are separate: `ttl` controls only how long the value is cached, while the coordination lease uses `leaseTtlMs` when a call passes it, otherwise `defaultTtlMs`. A short cache lifetime therefore cannot expire the lease mid-load, and a long one cannot keep a crashed owner's lease alive. Lease TTLs are floored at 50 ms - twice the minimum renewal interval - so a lease always outlives at least one renewal.
 
 The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
+
+### Undefined results
+
+Every built-in adapter reports a stored `undefined` as a miss, because that is what the underlying backends return for a missing key. A loader that resolves `undefined` is therefore never cached: each caller runs it again.
+
+`cacheUndefined: true` closes that gap. Crossflight stores a small marked envelope (`{ "__crossflight_undefined__": true }`) in place of the value and unwraps it on read, so a cached miss behaves like any other cached value. Your own cached values are stored and returned untouched. It is off by default because the marked value is visible to anything else reading the same key.
 
 ## Errors
 

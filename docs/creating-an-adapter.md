@@ -20,6 +20,7 @@ export interface CacheSetOptions {
 ## Key Points
 
 - **`get()` must distinguish hit from miss** — return `{ hit: false }` for missing keys, not `undefined`. This matters because `undefined` can be a valid cached value.
+- **If your backend cannot tell a stored `undefined` from a missing key**, the adapter can only report a miss. Note that in the adapter's docs: callers who need such a result cached can pass `cacheUndefined: true` to `createCrossflight()`, which stores and unwraps Crossflight's own marked envelope instead of relying on the backend.
 - **`set()` should respect TTL if provided** — the `ttl` is in milliseconds.
 - **Pass the TTL through as a number, not as the options object** — libraries such as Keyv expect `set(key, value, ttlInMs)`; forwarding `{ ttl }` silently disables expiry.
 - **Both methods must be async** — even if your cache is synchronous, wrap the result in a Promise.

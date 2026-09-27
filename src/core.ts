@@ -1,4 +1,7 @@
 import type {
+  CacheAdapter,
+  CacheLookup,
+  CacheSetOptions,
   CoordinationFailureMode,
   Crossflight,
   CrossflightOptions,
@@ -23,6 +26,64 @@ const MIN_RENEW_INTERVAL_MS = 25
  */
 const MIN_LEASE_TTL_MS = 2 * MIN_RENEW_INTERVAL_MS
 
+/**
+ * Marks a cached `undefined`. Every built-in adapter reports a stored
+ * `undefined` as a miss, so without the marker a loader that resolves
+ * `undefined` cannot be cached and runs again for every caller.
+ */
+const UNDEFINED_MARKER = '__crossflight_undefined__'
+
+interface UndefinedMarker {
+  [UNDEFINED_MARKER]: true
+}
+
+function isUndefinedMarker(value: unknown): value is UndefinedMarker {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<string, unknown>)[UNDEFINED_MARKER] === true
+  )
+}
+
+/**
+ * Lets a stored `undefined` survive the round trip: Crossflight writes it as
+ * a marked envelope and unwraps it on read. Any other value is passed
+ * through untouched, so this only changes what Crossflight itself writes for
+ * a loader that resolved `undefined`.
+ */
+function withCachedUndefined(cache: CacheAdapter): CacheAdapter {
+  return {
+    async get<T>(key: string): Promise<CacheLookup<T>> {
+      const lookup = await cache.get<T | UndefinedMarker>(key)
+      if (!lookup.hit) {
+        return { hit: false }
+      }
+
+      if (isUndefinedMarker(lookup.value)) {
+        return { hit: true, value: undefined as T }
+      }
+
+      return { hit: true, value: lookup.value as T }
+    },
+    async set<T>(
+      key: string,
+      value: T,
+      options?: CacheSetOptions
+    ): Promise<void> {
+      if (value === undefined) {
+        await cache.set(
+          key,
+          { [UNDEFINED_MARKER]: true } as unknown as T,
+          options
+        )
+        return
+      }
+
+      await cache.set(key, value, options)
+    },
+  }
+}
+
 interface Flight {
   /** The shared in-flight work for a key; every local caller adopts it. */
   promise: Promise<unknown>
@@ -43,16 +104,20 @@ type LeaseAcquire =
   | { kind: 'failed'; error: unknown }
 
 export function createCrossflight({
-  cache,
+  cache: providedCache,
   coordinator,
   defaultTimeoutMs,
   defaultTtlMs = DEFAULT_TTL_MS,
   maxRetryAttempts = DEFAULT_MAX_RETRY_ATTEMPTS,
   retryBackoff = DEFAULT_RETRY_BACKOFF,
   failureMode = 'fail-closed',
+  cacheUndefined = false,
   onEvent,
   onEventError,
 }: CrossflightOptions): Crossflight {
+  const cache = cacheUndefined
+    ? withCachedUndefined(providedCache)
+    : providedCache
   const localFlights = new Map<string, Flight>()
 
   const emit = (event: Parameters<NonNullable<typeof onEvent>>[0]) => {
