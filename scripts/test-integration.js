@@ -1,22 +1,9 @@
-import { spawnSync } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { composeDown, composeRun, composeUp } from './docker.js'
 
-const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-
-const run = (command, args = []) => {
-  const result = spawnSync(command, args, {
-    cwd: projectRoot,
-    stdio: 'inherit',
-    shell: true,
-  })
-  if (result.error) throw result.error
-  return result.status ?? 1
-}
-
-let exitCode = run('docker', ['compose', 'up', '-d', 'redis'])
+// Start Redis, run the integration suite in a container, then stop Redis.
+let exitCode = composeUp(['redis'])
 if (exitCode === 0) {
-  exitCode = run('docker', ['compose', 'run', '--rm', 'redis-integration-test'])
+  exitCode = composeRun('redis-integration-test')
 }
-const downCode = run('docker', ['compose', 'down', '--remove-orphans'])
+const downCode = composeDown()
 process.exit(exitCode === 0 ? downCode : exitCode)

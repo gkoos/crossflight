@@ -1,7 +1,23 @@
 name: CI
-on: [push, pull_request]
+
+# `push` is limited to main, as CodeQL already is: a branch with a pull request
+# open would otherwise get a push run and a pull_request run for the same commit,
+# testing the same tree twice. The pull request run covers the branch while it is
+# open, the push run covers the commits that land.
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions: read-all
+
+# Within each stream the older run is cancelled: successive pushes to one pull
+# request share the `refs/pull/<number>/merge` ref, and successive pushes to main
+# share `refs/heads/main`, so a superseded commit cannot keep the branch red
+# after it has been fixed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -14,6 +30,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      # `build` only compiles src/**, and vitest strips types rather than checking
+      # them, so a type error in a test file passes both: this step is what
+      # catches it.
+      - run: npm run typecheck
       - run: npm run build
       - run: npm run test:ci
       - name: Upload coverage to Codecov
@@ -23,6 +43,21 @@ jobs:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The generated suites also run inside the coverage job above. This job is the
+  # fast, Docker-free signal for them (and for a different seed, when
+  # CROSSFLIGHT_TEST_SEED is set for the run), so a failure is attributed to a
+  # property rather than to the suite as a whole.
+  generated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:generated
 
   # The cluster suite needs a real Redis Cluster, so it runs its own job.
   cluster:

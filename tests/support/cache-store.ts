@@ -23,6 +23,8 @@ export interface StoreHarness {
   /** Every key the adapter was asked for, in order. */
   readonly reads: string[]
   seed(key: string, value: unknown): void
+  /** Drops a key the way an eviction or an external writer would. */
+  forget(key: string): void
   peek(key: string): unknown
   has(key: string): boolean
 }
@@ -78,6 +80,9 @@ export function memoryStore(): StoreHarness {
     writes,
     reads,
     seed: (key, value) => values.set(key, value),
+    forget: (key) => {
+      values.delete(key)
+    },
     peek: (key) => values.get(key),
     has: (key) => values.has(key),
   }
@@ -110,6 +115,9 @@ export function jsonStore(): StoreHarness {
     writes,
     reads,
     seed: (key, value) => serialized.set(key, JSON.stringify(value)),
+    forget: (key) => {
+      serialized.delete(key)
+    },
     peek: (key) => serialized.get(key),
     has: (key) => typeof serialized.get(key) === 'string',
   }
