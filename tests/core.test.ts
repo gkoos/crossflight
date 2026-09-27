@@ -408,6 +408,53 @@ describe('crossflight core', () => {
       expect(capturedAttempts).toEqual([10, 20, 30])
       await crossflight.close()
     })
+    it('stops the contended wait when the caller cancels before the first wait', async () => {
+      const cache = new MemoryCache()
+      let waitCalls = 0
+      let loadRuns = 0
+
+      const coordinator = {
+        async acquire() {
+          return null // someone else owns it, so this flight only waits
+        },
+        async waitForChange() {
+          waitCalls += 1
+        },
+        async close() {},
+      }
+
+      const controller = new AbortController()
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        // Event handlers run synchronously inside the flight, so this is the
+        // deterministic point at which a contended caller cancels.
+        onEvent: (event) => {
+          if (event.type === 'distributed_join') {
+            controller.abort(new Error('cancelled-while-contended'))
+          }
+        },
+      })
+
+      const error = await crossflight
+        .wrap(
+          'contended:cancelled',
+          async () => {
+            loadRuns += 1
+            return 'never'
+          },
+          { signal: controller.signal }
+        )
+        .catch((e) => e)
+
+      expect((error as Error).message).toBe('cancelled-while-contended')
+      // The abort is observed before the first wait, so nothing waits on the
+      // owner and the loader never runs.
+      expect(waitCalls).toBe(0)
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
   })
 
   describe('failure mode', () => {
@@ -3716,6 +3763,49 @@ describe('crossflight core', () => {
         .catch((e) => e)
 
       expect((error as Error).message).toBe('gone')
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('does not start the loader when the flight aborts during the fail-open fallback', async () => {
+      const cache = new MemoryCache()
+      let loadRuns = 0
+
+      const coordinator = {
+        async acquire() {
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const controller = new AbortController()
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        // Runs synchronously between the fallback event and the loader, so the
+        // abort lands while the flight still owes the caller a rejection.
+        onEvent: (event) => {
+          if (event.type === 'fallback') {
+            controller.abort(new Error('cancelled-during-fallback'))
+          }
+        },
+      })
+
+      const error = await crossflight
+        .wrap(
+          'fail:open:cancelled:fallback',
+          async () => {
+            loadRuns += 1
+            return 'value'
+          },
+          { signal: controller.signal }
+        )
+        .catch((e) => e)
+
+      expect((error as Error).message).toBe('cancelled-during-fallback')
       expect(loadRuns).toBe(0)
 
       await crossflight.close()
