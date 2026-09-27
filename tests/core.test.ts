@@ -418,6 +418,146 @@ describe('crossflight core', () => {
     await expect(pending).rejects.toBeInstanceOf(CoordinationError)
   })
 
+  it('serves nothing after close, not even a value that is already cached', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    await cache.set('closed:hit', 'cached-value')
+    await crossflight.close()
+
+    let loadRuns = 0
+
+    await expect(
+      crossflight.wrap('closed:hit', async () => {
+        loadRuns += 1
+        return 'loaded'
+      })
+    ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    expect(loadRuns).toBe(0)
+  })
+
+  it('rejects work after close instead of letting a closed coordinator fall back to the loader', async () => {
+    const cache = new MemoryCache()
+    const coordinator = {
+      async acquire() {
+        throw new CoordinationClosedError()
+      },
+      async waitForChange() {
+        throw new CoordinationClosedError()
+      },
+      async close() {},
+    }
+
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      failureMode: 'fail-open',
+    })
+
+    await crossflight.close()
+
+    let loadRuns = 0
+
+    await expect(
+      crossflight.wrap('closed:fail-open', async () => {
+        loadRuns += 1
+        return 'fallback'
+      })
+    ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    expect(loadRuns).toBe(0)
+  })
+
+  it('rejects new work while close() is still shutting the coordinator down', async () => {
+    const cache = new MemoryCache()
+    let releaseClose = () => {}
+    const coordinator = {
+      async acquire() {
+        return null
+      },
+      async waitForChange() {},
+      async close() {
+        await new Promise<void>(resolve => {
+          releaseClose = resolve
+        })
+      },
+    }
+
+    const crossflight = createCrossflight({ cache, coordinator })
+    const closing = crossflight.close()
+
+    let loadRuns = 0
+
+    await expect(
+      crossflight.wrap('closed:while-closing', async () => {
+        loadRuns += 1
+        return 'loaded'
+      })
+    ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    expect(loadRuns).toBe(0)
+
+    releaseClose()
+    await closing
+  })
+
+  it('does not start a replacement flight for a call that arrives after close', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    let loadRuns = 0
+    const loader = async () => {
+      loadRuns += 1
+      await new Promise(resolve => setTimeout(resolve, 100))
+      return 'loaded'
+    }
+
+    const pending = crossflight.wrap('closed:replacement', loader)
+
+    // Let the flight reach the loader before it is aborted, so the assertion
+    // below really is about the second call and not about a loader that never
+    // started.
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(loadRuns).toBe(1)
+
+    await crossflight.close()
+    await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    // The aborted flight is winding down: joining it would hand this caller
+    // somebody else's abort reason, and starting a fresh one would run the
+    // loader again for work that no lease protects any more.
+    await expect(
+      crossflight.wrap('closed:replacement', loader)
+    ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    expect(loadRuns).toBe(1)
+  })
+
+  it('closes idempotently and reports no failure for a call it rejects', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const events: unknown[] = []
+    const crossflight = createCrossflight({
+      cache,
+      coordinator,
+      onEvent: event => events.push(event),
+    })
+
+    await crossflight.close()
+    await expect(crossflight.close()).resolves.toBeUndefined()
+
+    await expect(
+      crossflight.wrap('closed:again', async () => 'never')
+    ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+    // Nothing ran, so there is nothing to report: like the whole-flight
+    // deadline guard, the rejection happens before a flight exists.
+    expect(events).toEqual([])
+  })
+
   it('throws CoordinationTimeoutError after exhausting distributed retries', async () => {
     const cache = new MemoryCache()
     const coordinator = {

@@ -128,6 +128,13 @@ export function createCrossflight({
     : providedCache
   const localFlights = new Map<string, Flight>()
 
+  /**
+   * Set before close() aborts the flights, so a call that lands while the
+   * coordinator is still shutting down is rejected rather than starting work
+   * that nothing owns any more.
+   */
+  let closed = false
+
   const emit = (event: Parameters<NonNullable<typeof onEvent>>[0]) => {
     if (!onEvent) {
       return
@@ -338,6 +345,14 @@ export function createCrossflight({
     loader: Loader<T>,
     options: WrapOptions = {}
   ): Promise<T> => {
+    // A closed instance does no work at all: a cache hit is not served and no
+    // loader runs, in either failure mode, because ownership can no longer be
+    // coordinated. Checked before anything else, so a call that lands while
+    // close() is still tearing the coordinator down is rejected too.
+    if (closed) {
+      throw new CoordinationClosedError()
+    }
+
     const existing = localFlights.get(key)
 
     // A caller that arrives after the flight's deadline must not start a new
@@ -702,6 +717,11 @@ export function createCrossflight({
       return runWithFlight(key, loader, options ?? {})
     },
     close: async (): Promise<void> => {
+      // Marked closed first: work started while the coordinator is still
+      // shutting down would be unowned, so a call racing this one has to reject
+      // instead of falling through to the cache or a fail-open loader.
+      closed = true
+
       for (const record of localFlights.values()) {
         record.controller.abort(new CoordinationClosedError())
       }
