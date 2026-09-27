@@ -98,6 +98,31 @@ async function withCommandTimeout<T>(
   })
 }
 
+/**
+ * Change notifications only wake waiters early: a waiter that misses one
+ * re-checks when its own wait expires. They must therefore never decide an
+ * ownership change - a failed publish would otherwise fail an acquisition that
+ * already owns the lock, or report a renewal or release that did happen as
+ * failed, leaving the lease behind until it expires.
+ */
+async function notifyChange(
+  client: RedisClient,
+  channel: string,
+  commandTimeoutMs: number | undefined,
+  operation: string
+): Promise<void> {
+  try {
+    await withCommandTimeout(
+      commandTimeoutMs,
+      operation,
+      async () => await client.publish(channel, `${Date.now()}`)
+    )
+  } catch {
+    // Best effort: the ownership change is already applied, so waiters fall back
+    // to their own timeout instead of this notification.
+  }
+}
+
 class RedisLease implements Lease {
   constructor(
     public readonly key: string,
@@ -128,11 +153,11 @@ class RedisLease implements Lease {
     )
 
     if (Number(result) === 1) {
-      await withCommandTimeout(
+      await notifyChange(
+        this.client,
+        this.changeChannel,
         this.commandTimeoutMs,
-        'lease.renew.publish',
-        async () =>
-          await this.client.publish(this.changeChannel, `${Date.now()}`)
+        'lease.renew.publish'
       )
     }
 
@@ -158,11 +183,11 @@ class RedisLease implements Lease {
     )
 
     if (Number(result) === 1) {
-      await withCommandTimeout(
+      await notifyChange(
+        this.client,
+        this.changeChannel,
         this.commandTimeoutMs,
-        'lease.complete.publish',
-        async () =>
-          await this.client.publish(this.changeChannel, `${Date.now()}`)
+        'lease.complete.publish'
       )
     }
   }
@@ -186,11 +211,11 @@ class RedisLease implements Lease {
     )
 
     if (Number(result) === 1) {
-      await withCommandTimeout(
+      await notifyChange(
+        this.client,
+        this.changeChannel,
         this.commandTimeoutMs,
-        'lease.abandon.publish',
-        async () =>
-          await this.client.publish(this.changeChannel, `${Date.now()}`)
+        'lease.abandon.publish'
       )
     }
   }
@@ -384,10 +409,11 @@ export class RedisCoordinator implements Coordinator {
         return null
       }
 
-      await withCommandTimeout(
+      await notifyChange(
+        this.client,
+        changeChannel,
         this.commandTimeoutMs,
-        'acquire.publish',
-        async () => await this.client.publish(changeChannel, `${Date.now()}`)
+        'acquire.publish'
       )
 
       return new RedisLease(
