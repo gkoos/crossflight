@@ -672,6 +672,123 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('rejects the waiter when subscribing fails with a closed connection', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+
+    subscriptionClient.subscribe = () => Promise.reject(new Error('Connection is closed'))
+
+    await expect(
+      coordinator.waitForChange('redis:subscribe:closed:key', { timeoutMs: 200 })
+    ).rejects.toThrow(/closed/i)
+
+    subscriptionClient.subscribe = originalSubscribe
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('propagates a non-error subscription failure unchanged', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+
+    subscriptionClient.subscribe = () => Promise.reject('subscribe unavailable')
+
+    await expect(
+      coordinator.waitForChange('redis:subscribe:non-error:key', { timeoutMs: 100 })
+    ).rejects.toBe('subscribe unavailable')
+
+    subscriptionClient.subscribe = originalSubscribe
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('applies default lease and wait timeouts when options are omitted', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+
+    const key = 'redis:defaults:key'
+    const lease = await coordinator.acquire(key)
+    expect(lease).not.toBeNull()
+
+    await expect(coordinator.waitForChange(key)).resolves.toBeUndefined()
+
+    await lease!.abandon()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('does not publish a change notification when abandoning a lost lease', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+
+    const key = 'redis:abandon:lost:key'
+    const lease = await coordinator.acquire(key, { ttlMs: 50 })
+    expect(lease).not.toBeNull()
+
+    await new Promise(resolve => setTimeout(resolve, 120))
+    await expect(lease!.abandon()).resolves.toBeUndefined()
+
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('swallows a failed unsubscribe while closing an active waiter', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalUnsubscribe = subscriptionClient.unsubscribe.bind(subscriptionClient)
+    let unsubscribeCalls = 0
+
+    const waiter = coordinator.waitForChange('redis:close:unsubscribe:key', { timeoutMs: 200 })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    subscriptionClient.unsubscribe = () => {
+      unsubscribeCalls += 1
+      return Promise.reject(new Error('unsubscribe failed'))
+    }
+
+    await expect(coordinator.close()).resolves.toBeUndefined()
+    expect(unsubscribeCalls).toBeGreaterThan(0)
+    await expect(waiter).resolves.toBeUndefined()
+
+    subscriptionClient.unsubscribe = originalUnsubscribe
+    await client.quit()
+  })
+
+  it('propagates a non-error quit failure when closing', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+
+    internals.subscriptionClient.quit = () => Promise.reject('quit unavailable')
+
+    await expect(coordinator.close()).rejects.toBe('quit unavailable')
+
+    internals.subscriptionClient.disconnect()
+    client.disconnect()
+  })
+
+  it('propagates a rejected command when a command timeout is configured', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client, { commandTimeoutMs: 500 })
+
+    client.eval = () => Promise.reject(new Error('eval failed'))
+
+    await expect(
+      coordinator.acquire('redis:timeout:reject:key', { ttlMs: 100 })
+    ).rejects.toThrow('eval failed')
+
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('handles delayed subscribe rejection after wait timeout without hanging', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)
