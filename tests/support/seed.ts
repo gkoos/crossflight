@@ -54,8 +54,8 @@ export function resolveTestSeed(suite: string): number {
 export function replayHint(suite: string, seed: number): string {
   return [
     `seed ${seed} explored "${suite}" - replay it with:`,
-    `  PowerShell: $env:${TEST_SEED_ENV}='${seed}'; npm run test:property`,
-    `  POSIX:      ${TEST_SEED_ENV}=${seed} npm run test:property`,
+    `  PowerShell: $env:${TEST_SEED_ENV}='${seed}'; npm run test:generated`,
+    `  POSIX:      ${TEST_SEED_ENV}=${seed} npm run test:generated`,
   ].join('\n')
 }
 
