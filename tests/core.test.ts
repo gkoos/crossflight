@@ -1801,6 +1801,188 @@ describe('crossflight core', () => {
 
       await crossflight.close()
     })
+
+    // Coordination and cleanup are bounded by the flight deadline too: the
+    // callers are settled by the deadline even while a lease is still being
+    // acquired, renewed, completed or abandoned.
+    it('rejects its callers at the deadline while a slow acquisition is still in flight', async () => {
+      const cache = slowWriteCache(0)
+      const abandoned: string[] = []
+      const coordinator = {
+        async acquire(key: string) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {
+              abandoned.push(key)
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap('deadline:slow-acquire', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(Date.now() - startedAt).toBeLessThan(80)
+
+      // The lease still arrives after the flight gave up waiting, so it is
+      // released instead of leaking until its TTL.
+      await new Promise(resolve => setTimeout(resolve, 120))
+      expect(abandoned).toEqual(['deadline:slow-acquire'])
+
+      await crossflight.close()
+    })
+
+    it('rejects its callers at the deadline while an abandonment hangs', async () => {
+      const cache = slowWriteCache(0)
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {
+              await new Promise(() => {})
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap('deadline:hung-abandon', signal => stall(signal))
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(Date.now() - startedAt).toBeLessThan(120)
+
+      await crossflight.close()
+    })
+
+    it('rejects its callers at the deadline while a renewal hangs', async () => {
+      const cache = slowWriteCache(0)
+      let renewCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              await new Promise(() => {})
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 40,
+      })
+
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap(
+          'deadline:hung-renewal',
+          async () => {
+            await new Promise(resolve => setTimeout(resolve, 120))
+            return 'value'
+          },
+          { leaseTtlMs: 20 }
+        )
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(renewCalls).toBeGreaterThanOrEqual(1)
+      expect(Date.now() - startedAt).toBeLessThan(120)
+
+      await crossflight.close()
+    })
+
+    it('returns the value even when completing the lease hangs', async () => {
+      const cache = slowWriteCache(0)
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {
+              await new Promise(() => {})
+            },
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await expect(
+        crossflight.wrap('deadline:hung-complete', async () => 'value')
+      ).resolves.toBe('value')
+
+      await crossflight.close()
+    })
+
+    it('rejects its callers on close while an abandonment hangs', async () => {
+      const cache = slowWriteCache(0)
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {
+              await new Promise(() => {})
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const call = crossflight.wrap('close:hung-cleanup', signal =>
+        stall(signal)
+      )
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+      await crossflight.close()
+
+      await expect(call).rejects.toBeInstanceOf(CoordinationClosedError)
+    })
   })
 
   describe('publication ownership', () => {

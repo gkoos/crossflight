@@ -159,16 +159,41 @@ export function createCrossflight({
   }
 
   /**
+   * Runs cleanup without letting it hold anything that waits on it, and without
+   * leaving a rejection nobody observes unhandled.
+   */
+  const drain = (work: Promise<unknown>): void => {
+    void work.catch(() => undefined)
+  }
+
+  /**
    * Resolves or rejects with the work, but stops waiting the moment the flight
    * aborts and rejects with its abort reason instead. The work is not cancelled
    * here - that is what the signal handed to the loader is for - so a late
-   * settlement is drained rather than left to surface as unhandled.
+   * settlement is drained rather than left to surface as unhandled, unless
+   * `onLate` takes it over: a lease acquired after the callers left still owns
+   * the key and has to be released.
    */
   const raceWithAbort = <T>(
     work: Promise<T>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    onLate?: (value: T) => void
   ): Promise<T> => {
-    work.catch(() => undefined)
+    // Handed over whatever settles first, so a lease that arrives after the
+    // abort - even one the coordinator was still working on when the signal
+    // was already aborted - is released instead of leaking until its TTL.
+    const observed =
+      onLate === undefined
+        ? work
+        : work.then((value) => {
+            if (signal.aborted) {
+              onLate(value)
+            }
+
+            return value
+          })
+
+    drain(observed)
 
     return new Promise<T>((resolve, reject) => {
       if (signal.aborted) {
@@ -179,7 +204,7 @@ export function createCrossflight({
       const onAbort = () => reject(signal.reason)
       signal.addEventListener('abort', onAbort, { once: true })
 
-      work.then(
+      observed.then(
         (value) => {
           signal.removeEventListener('abort', onAbort)
           resolve(value)
@@ -345,10 +370,20 @@ export function createCrossflight({
 
     const acquireLease = async (): Promise<LeaseAcquire> => {
       try {
-        const lease = await coordinator.acquire(key, {
-          signal: controller.signal,
-          ttlMs: leaseTtlMs,
-        })
+        const lease = await raceWithAbort(
+          coordinator.acquire(key, {
+            signal: controller.signal,
+            ttlMs: leaseTtlMs,
+          }),
+          controller.signal,
+          // A lease that arrives after the flight gave up still owns the key:
+          // release it rather than leak it until its TTL.
+          (lateLease) => {
+            if (lateLease) {
+              drain(lateLease.abandon())
+            }
+          }
+        )
 
         return lease ? { kind: 'acquired', lease } : { kind: 'contended' }
       } catch (error) {
@@ -433,7 +468,10 @@ export function createCrossflight({
             const waitStartedAt = Date.now()
 
             try {
-              await waitForRetry(key, attempt, controller.signal)
+              await raceWithAbort(
+                waitForRetry(key, attempt, controller.signal),
+                controller.signal
+              )
             } catch (error) {
               waitedMs += Date.now() - waitStartedAt
 
@@ -497,7 +535,7 @@ export function createCrossflight({
           if (recheck.hit) {
             // Another owner filled the cache while we were acquiring, so this
             // lease protects nothing: release it rather than hold it to its TTL.
-            await lease.abandon().catch(() => undefined)
+            drain(lease.abandon())
             emit({ type: 'hit', key, waitedMs })
             return recheck.value
           }
@@ -519,7 +557,9 @@ export function createCrossflight({
             }
 
             if (renewalInFlight) {
-              await renewalInFlight.catch(() => undefined)
+              await raceWithAbort(renewalInFlight, controller.signal).catch(
+                () => undefined
+              )
             }
           }
 
@@ -575,7 +615,7 @@ export function createCrossflight({
             if (!stillOwner) {
               const ownershipLost = new OwnershipLostError(key)
               emit({ type: 'failed', key, error: ownershipLost })
-              await lease.abandon().catch(() => undefined)
+              drain(lease.abandon())
               // Retry the whole attempt on this flight: the record keeps its
               // caller set and controller, so no caller's timeout leaks into
               // the shared retry.
@@ -593,7 +633,7 @@ export function createCrossflight({
             // report ownership lost, and turn a successful publication into a
             // failed one.
             await stopRenewal()
-            await lease.complete()
+            drain(lease.complete())
           } finally {
             await stopRenewal()
           }
@@ -613,7 +653,7 @@ export function createCrossflight({
           })
           return value
         } catch (error) {
-          await lease.abandon().catch(() => undefined)
+          drain(lease.abandon())
           // Reported once by the outer catch.
           throw error
         }
@@ -641,7 +681,7 @@ export function createCrossflight({
 
     // If every waiting caller detaches before the flight settles, the abort is
     // observed here so a late rejection never surfaces as unhandled.
-    flight.catch(() => undefined)
+    drain(flight)
 
     localFlights.set(key, record)
 
