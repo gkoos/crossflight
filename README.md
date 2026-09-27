@@ -210,11 +210,13 @@ Each failure produces exactly one `failed` event. Coordination errors that surfa
 
 ## Failure semantics
 
-Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. While the owner is executing the loader, Crossflight periodically renews the lease to keep ownership valid for long-running work. If an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
+Distributed coalescing is a best-effort reduction of redundant work, not a guarantee that the loader runs exactly once. While the owner is executing the loader - and while it publishes the result - Crossflight periodically renews the lease to keep ownership valid for long-running work. If an owner process fails after completing the loader but before writing the result to cache, the lease eventually expires and another process takes over. Loaders should therefore tolerate running more than once under failure conditions.
 
 The guarantee Crossflight offers is narrower: under normal operation, concurrent misses for the same key across all participating processes produce one loader execution, and every waiting caller receives that result.
 
 Ownership is released on every exit path: the owner completes the lease after the cache write, and abandons it when the loader fails, the flight aborts, or the ownership recheck finds a value another process already cached.
+
+Because renewal keeps running until the publication settles, a slow write cannot lose the lease and let a newer owner be overwritten. One window remains: if a renewal fails while the write is in flight, the value is still published - a cache write cannot be cancelled, and deleting it afterwards could remove the newer owner's value instead - and the flight reports `failed` (plus `renewal_failed` when the renewal threw) before emitting `completed`. Closing that window requires the store itself to reject a stale write, through a conditional write or a fencing token, which `CacheAdapter` cannot express today; treat a `failed` reported during publication as a signal that the cached value may be stale.
 
 ### fail-open
 
@@ -236,7 +238,7 @@ To reduce unnecessary aborts under short-lived coordinator disruptions, tune two
 
 Passing an `AbortSignal` to `wrap()` cancels that caller's participation, and `timeoutMs` bounds that caller's own wait. Both are scoped to the individual caller: they reject only that caller, and if other callers are waiting on the same flight the loader and the coordination lease continue unaffected. The shared flight is cancelled only when the **last** waiting caller cancels or when `close()` is called; otherwise it ends when the owner completes or abandons it. A cancelled caller receives its own reason (`signal.reason` or `CoordinationTimeoutError`).
 
-The signal handed to the loader is the flight's own signal, not any one caller's. When the flight aborts - the last caller cancels, `close()` is called, or the lease is lost - Crossflight stops waiting for the loader immediately, reports a single `failed` event, and abandons the lease. The loader keeps running until it observes the signal, so give it a way to stop: `wrap('product:42', (signal) => fetchProduct(42, { signal }))`. An abort never releases ownership while a cache write is in flight: the write is awaited first, so a replacement owner can never have its newer value overwritten by the abandoned one.
+The signal handed to the loader is the flight's own signal, not any one caller's. When the flight aborts - the last caller cancels, `close()` is called, or the lease is lost - Crossflight stops waiting for the loader immediately, reports a single `failed` event, and abandons the lease. The loader keeps running until it observes the signal, so give it a way to stop: `wrap('product:42', (signal) => fetchProduct(42, { signal }))`. A cache write is not abortable, so ownership is held until it settles: renewal keeps running while the write is in flight, and the lease is completed afterwards, so a replacement owner cannot publish a newer value that this write would then overwrite. If ownership is genuinely lost mid-write - a renewal reports the lease as gone - the write still lands and the store keeps the last write (see [failure semantics](#failure-semantics)).
 
 ## Scope
 

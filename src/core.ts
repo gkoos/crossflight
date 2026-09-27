@@ -524,7 +524,10 @@ export function createCrossflight({
           }
 
           const scheduleRenewal = () => {
-            if (renewalStopped || controller.signal.aborted) {
+            // Only an explicit stop ends renewal: an abort must not, because a
+            // cache write that is already in flight keeps running and its lease
+            // has to stay held until it settles.
+            if (renewalStopped) {
               return
             }
 
@@ -555,44 +558,51 @@ export function createCrossflight({
           scheduleRenewal()
 
           let value: T
+
+          // Renewal stays active until the publication settles. A cache write
+          // has no signal and can outlive its lease, and a lease that expires
+          // mid-write lets a replacement owner publish a newer value that this
+          // late, stale write would then overwrite. Holding the lease through
+          // the write is what makes the ownership guarantee real; if a renewal
+          // still fails mid-write, ownership is gone for good and only a store
+          // that rejects stale writes could prevent the overwrite (see the
+          // README's failure semantics).
           try {
             value = await runLoader(loader, controller.signal)
+
+            if (renewalError) {
+              throw renewalError
+            }
+
+            const stillOwner = await lease.renew()
+
+            if (!stillOwner) {
+              const ownershipLost = new OwnershipLostError(key)
+              emit({ type: 'failed', key, error: ownershipLost })
+              await lease.abandon().catch(() => undefined)
+              // Retry the whole attempt on this flight: the record keeps its
+              // caller set and controller, so no caller's timeout leaks into
+              // the shared retry.
+              return attempt()
+            }
+
+            if (controller.signal.aborted) {
+              throw controller.signal.reason
+            }
+
+            await cache.set(key, value, { ttl: options.ttl })
+            await lease.complete()
           } finally {
             await stopRenewal()
           }
 
           if (renewalError) {
-            throw renewalError
+            // Ownership was lost while the value was being published: the
+            // write has already happened, so the caller still receives it, but
+            // the loss is reported like any other ownership loss.
+            emit({ type: 'failed', key, error: renewalError })
           }
 
-          const stillOwner = await lease.renew()
-
-          if (!stillOwner) {
-            const ownershipLost = new OwnershipLostError(key)
-            emit({ type: 'failed', key, error: ownershipLost })
-            await lease.abandon().catch(() => undefined)
-            // Retry the whole attempt on this flight: the record keeps its
-            // caller set and controller, so no caller's timeout leaks into the
-            // shared retry.
-            return attempt()
-          }
-
-          if (controller.signal.aborted) {
-            throw controller.signal.reason
-          }
-
-          // Ownership is deliberately held until the write settles: a cache
-          // write has no signal, so releasing the lease early would let a
-          // replacement owner publish a newer value that this late, stale
-          // write could then overwrite. The flight deadline cannot break that:
-          // its abort either fires before the ownership check above - and the
-          // flight abandons without writing - or after it, where the lease was
-          // just renewed and stays held until the write settles.
-          // write has no signal, so releasing the lease early would let a
-          // replacement owner publish a newer value that this late, stale
-          // write could then overwrite.
-          await cache.set(key, value, { ttl: options.ttl })
-          await lease.complete()
           emit({
             type: 'completed',
             key,

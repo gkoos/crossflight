@@ -1803,6 +1803,148 @@ describe('crossflight core', () => {
     })
   })
 
+  describe('publication ownership', () => {
+    const sleep = (ms: number) =>
+      new Promise(resolve => setTimeout(resolve, ms))
+
+    // A cache whose write is slow: a publication can outlive a short lease.
+    const slowWriteCache = (writeMs: number) => {
+      const values = new Map<string, unknown>()
+      let writeInFlight = false
+
+      return {
+        values,
+        async get<T>(key: string) {
+          const value = values.get(key) as T | undefined
+          if (value === undefined) {
+            return { hit: false as const }
+          }
+
+          return { hit: true as const, value }
+        },
+        async set<T>(key: string, value: T) {
+          if (!writeInFlight) {
+            writeInFlight = true
+            await sleep(writeMs)
+          }
+
+          values.set(key, value)
+        },
+      }
+    }
+
+    it('holds the lease while a slow write is in flight', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(300)
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const first = crossflight.wrap('slow:lease:key', async () => 'value', {
+        leaseTtlMs: 60,
+      })
+
+      // Past the lease's first expiry, while the write is still in flight.
+      await sleep(150)
+      await expect(
+        coordinator.acquire('slow:lease:key', { ttlMs: 60 })
+      ).resolves.toBeNull()
+
+      await expect(first).resolves.toBe('value')
+      expect(cache.values.get('slow:lease:key')).toBe('value')
+
+      await crossflight.close()
+    })
+
+    it('does not let a slow write overwrite a newer owner', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(300)
+      const staleOwner = createCrossflight({ cache, coordinator })
+      const newerOwner = createCrossflight({ cache, coordinator })
+      let loadRuns = 0
+
+      const first = staleOwner.wrap(
+        'slow:publication:key',
+        async () => {
+          loadRuns += 1
+          return 'old'
+        },
+        { leaseTtlMs: 60 }
+      )
+
+      // The lease's first expiry passes while the publication is in flight.
+      await sleep(150)
+
+      const second = await newerOwner.wrap(
+        'slow:publication:key',
+        async () => {
+          loadRuns += 1
+          return 'new'
+        },
+        { leaseTtlMs: 60 }
+      )
+
+      await expect(first).resolves.toBe('old')
+
+      // Give the slow publication time to land.
+      await sleep(250)
+
+      // The second caller joined the first owner instead of loading again.
+      expect(loadRuns).toBe(1)
+      expect(second).toBe('old')
+      expect(cache.values.get('slow:publication:key')).toBe('old')
+
+      await staleOwner.close()
+      await newerOwner.close()
+    })
+
+    it('reports an ownership loss that happens during the publication', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(200)
+      const events: unknown[] = []
+      let renewCalls = 0
+      const acquire = coordinator.acquire.bind(coordinator)
+
+      coordinator.acquire = async (key, options) => {
+        const lease = await acquire(key, options)
+        if (!lease) {
+          return lease
+        }
+
+        return {
+          key: lease.key,
+          renew: async () => {
+            renewCalls += 1
+            // The first renewal is the pre-write ownership check; the next
+            // one fires while the write is in flight.
+            return renewCalls < 2
+          },
+          complete: () => lease.complete(),
+          abandon: () => lease.abandon(),
+        }
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('slow:loss:key', async () => 'value', { leaseTtlMs: 60 })
+      ).resolves.toBe('value')
+
+      expect(cache.values.get('slow:loss:key')).toBe('value')
+      expect(
+        events.filter(
+          event =>
+            (event as { type: string }).type === 'failed' &&
+            (event as { error?: unknown }).error instanceof OwnershipLostError
+        )
+      ).toHaveLength(1)
+
+      await crossflight.close()
+    })
+  })
+
   describe('failed event deduplication', () => {
     type ObservedEvent = { type: string; key?: string; error?: unknown }
 
