@@ -187,6 +187,8 @@ Distributed coalescing is a best-effort reduction of redundant work, not a guara
 
 The guarantee Crossflight offers is narrower: under normal operation, concurrent misses for the same key across all participating processes produce one loader execution, and every waiting caller receives that result.
 
+Ownership is released on every exit path: the owner completes the lease after the cache write, and abandons it when the loader fails, the flight aborts, or the ownership recheck finds a value another process already cached.
+
 ### fail-open
 
 `failureMode: 'fail-open'` is about a **failed** coordination call, not about losing the race for the lease. When `acquire()`, `waitForChange()` or a re-acquire throws, Crossflight reports a `failed` event and runs the loader itself instead of rejecting the caller.

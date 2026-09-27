@@ -367,6 +367,9 @@ export function createCrossflight({
         try {
           const recheck = await cache.get<T>(key)
           if (recheck.hit) {
+            // Another owner filled the cache while we were acquiring, so this
+            // lease protects nothing: release it rather than hold it to its TTL.
+            await lease.abandon().catch(() => undefined)
             emit({ type: 'hit', key })
             return recheck.value
           }
