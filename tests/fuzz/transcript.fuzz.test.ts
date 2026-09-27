@@ -36,7 +36,8 @@ import { createPropertySuite } from '../support/seed.js'
  * - a cancellation rejects that caller with its own reason, and no other
  *   caller's promise rejects with it;
  * - every call settles (a hung flight is a failure too), and no lease is left
- *   behind unless the plan deliberately failed its release.
+ *   behind unless the release the plan called for actually failed; a fault
+ *   index the run never reached excuses nothing.
  */
 const itProperty = createPropertySuite('transcript', { runs: 30 })
 
@@ -56,6 +57,8 @@ interface Step {
 interface FaultPlan {
   acquire: number | null
   waitForChange: number | null
+  /** Renewal is what keeps ownership, so losing it gets its own injected mode. */
+  renew: number | null
   complete: number | null
   abandon: number | null
   get: number | null
@@ -89,6 +92,7 @@ const plainStepArbitrary: fc.Arbitrary<Step> = stepArbitrary.map((step) => ({
 const NO_FAULTS: FaultPlan = {
   acquire: null,
   waitForChange: null,
+  renew: null,
   complete: null,
   abandon: null,
   get: null,
@@ -100,6 +104,7 @@ const scenarioArbitrary: fc.Arbitrary<Scenario> = fc.record({
   faults: fc.record({
     acquire: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
     waitForChange: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
+    renew: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
     complete: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
     abandon: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
     get: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null }),
@@ -170,35 +175,64 @@ const counted = (): (() => number) => {
   }
 }
 
+/** The faults a run actually hit: a plan may name an index the run never reaches. */
+type FiredFaults = Record<keyof FaultPlan, boolean>
+
 interface Faults {
   acquire: () => boolean
   waitForChange: () => boolean
+  renew: () => boolean
   complete: () => boolean
   abandon: () => boolean
   get: () => boolean
   set: () => boolean
+  /** Which of the above fired, for the assertions that have to tell them apart. */
+  fired: FiredFaults
 }
 
 const faultsFor = (plan: FaultPlan): Faults => {
-  const counters = {
+  const counters: Record<keyof FaultPlan, () => number> = {
     acquire: counted(),
     waitForChange: counted(),
+    renew: counted(),
     complete: counted(),
     abandon: counted(),
     get: counted(),
     set: counted(),
   }
 
-  const due = (index: number | null, next: () => number) => (): boolean =>
-    index !== null && next() === index
+  const fired: FiredFaults = {
+    acquire: false,
+    waitForChange: false,
+    renew: false,
+    complete: false,
+    abandon: false,
+    get: false,
+    set: false,
+  }
+
+  // `fired` is set where the fault is thrown, not where the plan names it: an
+  // index the run never reaches is not a failure and may not excuse anything.
+  const due = (kind: keyof FaultPlan) => (): boolean => {
+    const index = plan[kind]
+
+    if (index === null || counters[kind]() !== index) {
+      return false
+    }
+
+    fired[kind] = true
+    return true
+  }
 
   return {
-    acquire: due(plan.acquire, counters.acquire),
-    waitForChange: due(plan.waitForChange, counters.waitForChange),
-    complete: due(plan.complete, counters.complete),
-    abandon: due(plan.abandon, counters.abandon),
-    get: due(plan.get, counters.get),
-    set: due(plan.set, counters.set),
+    acquire: due('acquire'),
+    waitForChange: due('waitForChange'),
+    renew: due('renew'),
+    complete: due('complete'),
+    abandon: due('abandon'),
+    get: due('get'),
+    set: due('set'),
+    fired,
   }
 }
 
@@ -207,6 +241,10 @@ const faultyLease = (lease: Lease, faults: Faults): Lease => ({
     return lease.key
   },
   async renew(): Promise<boolean> {
+    if (faults.renew()) {
+      throw new Error('renew failed')
+    }
+
     return lease.renew()
   },
   async complete(): Promise<void> {
@@ -296,6 +334,8 @@ interface ScenarioResult {
   steps: StepResult[]
   /** Leases still held once the transcript had settled, before close(). */
   leaked: number
+  /** The faults the run hit, so a leak is only excused by a release that failed. */
+  fired: FiredFaults
 }
 
 /**
@@ -493,15 +533,16 @@ const runScenario = async (scenario: Scenario): Promise<ScenarioResult> => {
     // land before the leases it holds can be counted.
     await settles(() => coordinator.owners.size === 0)
 
-    return { violations, steps, leaked: coordinator.owners.size }
+    return {
+      violations,
+      steps,
+      leaked: coordinator.owners.size,
+      fired: faults.fired,
+    }
   } finally {
     await crossflight.close()
   }
 }
-
-/** A release the plan failed is allowed to leave its lease to the ttl. */
-const releaseFaulted = (plan: FaultPlan): boolean =>
-  plan.complete !== null || plan.abandon !== null
 
 describe('a generated transcript', () => {
   itProperty(
@@ -514,9 +555,10 @@ describe('a generated transcript', () => {
       // settling of every call, in one report: the entries name what broke.
       expect(result.violations).toEqual([])
 
-      // A release the plan failed may leave its lease to the ttl - that is what
-      // the ttl is for. Nothing else may leave one behind.
-      if (!releaseFaulted(scenario.faults)) {
+      // A release that actually failed may leave its lease to the ttl - that is
+      // what the ttl is for. A plan that merely named an index the run never
+      // reached is not a failed release, so it excuses nothing.
+      if (!result.fired.complete && !result.fired.abandon) {
         expect(result.leaked).toBe(0)
       }
     }
