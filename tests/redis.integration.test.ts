@@ -731,8 +731,15 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const lease = await coordinator.acquire(key, { ttlMs: 50 })
     expect(lease).not.toBeNull()
 
+    // Spy after acquiring: a successful acquire publishes its own notification.
+    const publish = vi.spyOn(client, 'publish')
+
     await new Promise(resolve => setTimeout(resolve, 120))
     await expect(lease!.abandon()).resolves.toBeUndefined()
+
+    expect(publish).not.toHaveBeenCalled()
+
+    publish.mockRestore()
 
     await coordinator.close()
     await client.quit()
