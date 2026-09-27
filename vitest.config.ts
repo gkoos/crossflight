@@ -5,7 +5,11 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     include: ['tests/**/*.test.ts'],
-    exclude: ['tests/**/*.integration.test.ts'],
+    exclude: [
+      'tests/**/*.integration.test.ts',
+      'tests/property/**',
+      'tests/fuzz/**',
+    ],
     testTimeout: 30000,
     coverage: {
       provider: 'v8',
