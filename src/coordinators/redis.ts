@@ -246,10 +246,11 @@ export class RedisCoordinator implements Coordinator {
   }
 
   /**
-   * The lease key and the change channel of one logical key share a `{...}`
-   * hash tag, so Redis Cluster routes both to the same slot: a waiter
-   * subscribes on the node that holds its owner's lease, and a future
-   * multi-key script would still be valid on a cluster.
+   * One logical key maps to one `{...}` hash tag, so every Redis key derived
+   * from it lands in the same cluster slot and a future multi-key command or
+   * Lua script would stay valid on a cluster. The change channel carries the
+   * tag for consistency only: a Pub/Sub channel is not a key, no slot routes
+   * it, and cluster Pub/Sub reaches every node on its own.
    */
   private resolveLeaseKey(key: string): string {
     return `${this.namespace}:{${this.hashKey(key)}}:flight`

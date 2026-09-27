@@ -2,4 +2,4 @@
 'crossflight': minor
 ---
 
-Support Redis Cluster: `redisCoordinator` accepts an ioredis `Cluster` as well as a `Redis` client, and the per-key lease and change keys now carry a `{<hash>}` tag (`crossflight:{<hash>}:flight`) so both land in the same cluster slot.
+Support Redis Cluster: `redisCoordinator` accepts an ioredis `Cluster` as well as a `Redis` client, and keys are now tagged with a `{<hash>}` slot tag (`crossflight:{<hash>}:flight`) so every key derived from one logical key lives in the same cluster slot. The layout itself changed: processes running different Crossflight versions derive different keys and do not share leases, so upgrade without overlapping versions.

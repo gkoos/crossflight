@@ -39,7 +39,7 @@ crossflight:{<sha256(key)>}:flight
 crossflight:{<sha256(key)>}:change
 ```
 
-The `{...}` part is a Redis hash tag. Because the tag is the hash of the logical key, the lease key and the change channel of one key always hash to the same cluster slot - a waiter subscribes on the node that holds the lease it is waiting on - while different keys still spread across all slots.
+The `{...}` part is a Redis hash tag: because the tag is the hash of the logical key, every key derived from one logical key hashes to the same cluster slot, while different keys still spread across all slots. The change channel carries the tag too, for consistency - a Pub/Sub channel is not a stored key and no slot routes it, cluster Pub/Sub reaches every node on its own.
 
 The namespace keeps the coordination keys namespaced and avoids collisions between different applications or cache namespaces.
 
@@ -152,12 +152,12 @@ const crossflight = createCrossflight({
 
 What matters on a cluster:
 
-- the key layout keeps it correct: the lease key and the change channel of a key carry the same `{...}` hash tag, so they live in one slot and a resharding migration moves them together
-- Pub/Sub is cluster-wide, so a waiter on any node sees the owner's change notification
+- the tag keeps every key derived from one logical key in a single slot, so a future multi-key command or Lua script stays valid on a cluster and cluster tooling sees one shard per key
+- Pub/Sub needs no slot affinity: it is cluster-wide, so a waiter on any node sees the owner's change notification
 - the coordinator duplicates the client for its Pub/Sub connection, so a cluster client has to support `duplicate()` - `ioredis` does - and the client you pass stays caller-owned
-- `namespace` and `hashKey` behave exactly as on a single node: processes only have to agree on those options
+- `namespace` and `hashKey` behave exactly as on a single node: processes only have to agree on those options and that they run the same Crossflight version
 
-`npm run test:integration:cluster` runs the shared coordinator contract against a live cluster (the same spec the single-node coordinator and the in-memory mocks pass), plus cluster-specific checks for slot affinity and cross-node ownership and wake-ups.
+`npm run test:integration:cluster` runs the shared coordinator contract against a live cluster (the same spec the single-node coordinator and the in-memory mocks pass), plus cluster-specific checks for the tagged layout and cross-node ownership and wake-ups.
 
 ## Close semantics
 

@@ -22,6 +22,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-1
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7001', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-1.conf:/etc/redis/redis.conf:ro
     ports:
@@ -34,6 +39,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-2
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7002', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-2.conf:/etc/redis/redis.conf:ro
     ports:
@@ -46,6 +56,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-3
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7003', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-3.conf:/etc/redis/redis.conf:ro
     ports:
@@ -58,6 +73,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-4
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7004', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-4.conf:/etc/redis/redis.conf:ro
     ports:
@@ -70,6 +90,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-5
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7005', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-5.conf:/etc/redis/redis.conf:ro
     ports:
@@ -82,6 +107,11 @@ services:
     image: redis:7-alpine
     container_name: crossflight-redis-node-6
     command: ['redis-server', '/etc/redis/redis.conf']
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-p', '7006', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - ./docker/redis/cluster-node-6.conf:/etc/redis/redis.conf:ro
     ports:
@@ -93,16 +123,22 @@ services:
   redis-cluster-init:
     image: redis:7-alpine
     depends_on:
-      - redis-node-1
-      - redis-node-2
-      - redis-node-3
-      - redis-node-4
-      - redis-node-5
-      - redis-node-6
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
     networks:
       - redis-cluster
     entrypoint: >
-      sh -c "sleep 5; redis-cli --cluster create
+      sh -c "redis-cli --cluster create
       172.28.0.11:7001 172.28.0.12:7002 172.28.0.13:7003
       172.28.0.14:7004 172.28.0.15:7005 172.28.0.16:7006
       --cluster-replicas 1 --cluster-yes"
@@ -161,7 +197,8 @@ services:
       - .:/workspace
       - /workspace/node_modules
     depends_on:
-      - redis-cluster-init
+      redis-cluster-init:
+        condition: service_completed_successfully
     networks:
       - redis-cluster
     command: >

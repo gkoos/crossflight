@@ -79,7 +79,7 @@ describe.runIf(shouldRun)('redis cluster integration', () => {
     expect(await client.ping()).toBe('PONG')
   })
 
-  it('pins a lease key and its change channel to the same cluster slot', async () => {
+  it('tags every key derived from one logical key with the same slot', async () => {
     const { client, coordinator } = openCluster()
     const key = 'cluster:slot:key'
     const lease = await coordinator.acquire(key, { ttlMs: 1000 })
@@ -94,8 +94,9 @@ describe.runIf(shouldRun)('redis cluster integration', () => {
       `crossflight:{${tag}}:change`
     )
 
-    // Both artifacts are routed by the tag, so a waiter subscribes on the
-    // node that holds the lease it is waiting on.
+    // The tag is what pins derived keys to one slot. Pub/Sub needs no
+    // affinity - it is cluster-wide - so the waiter case is covered by the
+    // cross-node test below.
     expect(channelSlot).toBe(leaseSlot)
     expect(await client.cluster('KEYSLOT', `{${tag}}`)).toBe(leaseSlot)
 
