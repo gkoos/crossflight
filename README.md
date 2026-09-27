@@ -126,20 +126,40 @@ All options passed to `createCrossflight()`:
 | `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [fail-open](#fail-open)) |
 | `defaultTimeoutMs` | `number` | none | Per-call timeout in ms |
 | `defaultTtlMs` | `number` | `30000` | Default lease TTL when a call does not pass `leaseTtlMs` (independent of the cache `ttl`) |
+| `defaultFlightDeadlineMs` | `number` | none | Whole-flight deadline in ms; when it passes the flight is aborted, its lease abandoned, and late callers rejected (see [shared flight deadline](#shared-flight-deadline)) |
 | `maxRetryAttempts` | `number` | `64` | Distributed retry limit before throwing `CoordinationTimeoutError` |
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
+| `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` by writing every value into a reserved envelope (see [undefined results](#undefined-results)) |
 
-Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
+Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `flightDeadlineMs`, `timeoutMs`, `failureMode`, `signal`.
 
 The cache lifetime and the lease lifetime are separate: `ttl` controls only how long the value is cached, while the coordination lease uses `leaseTtlMs` when a call passes it, otherwise `defaultTtlMs`. A short cache lifetime therefore cannot expire the lease mid-load, and a long one cannot keep a crashed owner's lease alive. Lease TTLs are floored at 50 ms - twice the minimum renewal interval - so a lease always outlives at least one renewal.
 
 The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
 
+### Shared flight deadline
+
+By default a flight has no deadline of its own: each caller's `timeoutMs` bounds only that caller's wait, so a second caller joining a slow flight gets a fresh full timeout and the group's latency is bounded only by the loader.
+
+`defaultFlightDeadlineMs` puts one budget on the whole flight, measured from the moment the flight is created. When it passes, the flight is aborted: callers waiting on it reject with `CoordinationTimeoutError`, the owner abandons its lease, and a caller that arrives afterwards is rejected immediately instead of starting a new flight - which is what keeps a deadline from becoming a stampede. `flightDeadlineMs` overrides it per call, and the call that creates a flight decides the budget its joiners inherit.
+
+The deadline is a latency budget rather than a coordination failure, so it applies in both failure modes: `fail-open` cannot fall back to running the loader, because the flight's signal is already aborted - a loader that received that signal will have stopped, or will stop as soon as it observes it. A caller's own `timeoutMs` still bounds that caller, `maxRetryAttempts` still bounds the distributed retry loop, and `leaseTtlMs` still bounds ownership; the flight deadline is what bounds the flight as a whole.
+
+Cache reads are raced with the flight's signal, so a stalled read cannot hold the flight past the deadline either. The cache write is the one step that cannot be interrupted: it still finishes and hands its value to the callers still attached to the flight. The deadline bounds how long the flight waits for work, and aborting it is what releases the lease.
+
+### Undefined results
+
+Every built-in adapter reports a stored `undefined` as a miss, because that is what the underlying backends return for a missing key. A loader that resolves `undefined` is therefore never cached: each caller runs it again.
+
+`cacheUndefined: true` closes that gap. While it is on, every value Crossflight writes goes into the reserved envelope `{ "__crossflight_envelope__": 1, value }` - a loader result of `undefined` is the same envelope without a `value` key - and is unwrapped on read. Wrapping every value is what makes the format unambiguous: whatever your loader returns comes back exactly as it was, including an object that looks like the envelope itself.
+
+Raw values written by a process that has the option off still read back as they were. Two processes sharing a cache, however, have to agree on the setting: an option-off process reading an enveloped value sees the envelope, not the value, and anything else reading those keys directly has to unwrap it too.
+
 ## Errors
 
-When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when either the per-call timeout elapses or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is thrown to the owner process when a periodic lease renewal confirms the lease is gone (`renew()` returns `false`); it surfaces through `onEvent` as a `failed` event and the owner's `wrap()` call rejects.
+When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when the per-call timeout elapses, the flight deadline passes, or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is thrown to the owner process when a periodic lease renewal confirms the lease is gone (`renew()` returns `false`); it surfaces through `onEvent` as a `failed` event and the owner's `wrap()` call rejects.
 
 | Class | When thrown |
 | --- | --- |

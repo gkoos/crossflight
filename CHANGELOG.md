@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- f303c56: Hand the shared flight's `AbortSignal` to the loader and stop waiting for it the moment the flight aborts, so a lost lease or `close()` rejects `wrap()` at once and abandons the lease instead of parking until the loader settles.
+- cc8d876: Cache loader results of `undefined` behind the new `cacheUndefined` option, which stores every value in a reserved `{ "__crossflight_envelope__": 1, value }` envelope and unwraps it on read, so one cached miss is not treated as a miss by every later caller.
+- df99d12: Give the coordination lease its own lifetime: `wrap()` now takes `leaseTtlMs` (defaulting to `defaultTtlMs`, floored at 50 ms), so the cache `ttl` no longer expires the lease before its first renewal or keeps a crashed owner's lease alive for as long as the value stays cached.
+- 27b0ca5: Emit `cancelled`, `fallback` and `wait_exhausted` events, and report the distributed wait in `waitedMs` on `hit` and `completed`, so callers can see why work was skipped, joined, or run without ownership.
+- 1ec10da: Support Redis Cluster: `redisCoordinator` accepts an ioredis `Cluster` as well as a `Redis` client, and keys are now tagged with a `{<hash>}` slot tag (`crossflight:{<hash>}:flight`) so every key derived from one logical key lives in the same cluster slot. The layout itself changed: processes running different Crossflight versions derive different keys and do not share leases, so upgrade without overlapping versions.
+- 7cd4604: Add an opt-in whole-flight deadline - `defaultFlightDeadlineMs` on the factory or `flightDeadlineMs` per call - which aborts the shared flight when the budget passes, so joiners cannot each wait a fresh full timeout and a caller arriving afterwards is rejected instead of starting a new flight.
+
+### Patch Changes
+
+- df99d12: Settle waiters that are still parked when a coordinator is closed, instead of leaving them to time out on their own.
+- 1a0a463: Trip the fail-open fallback only when a coordination call fails, not when `acquire()` reports the lease is held by another owner, so `failureMode: 'fail-open'` keeps coalescing calls under ordinary contention instead of running the loader in every process.
+- 880d5e1: Pass the cache TTL to Keyv as a number of milliseconds so cached values actually expire, and align the exported `KeyvLike` interface with Keyv's real `set()`/`get()` contract.
+- 4dfa9d9: Honour each caller's own `AbortSignal` and `timeoutMs` when it joins a shared in-process flight so a cancellation rejects only that caller, and abort the shared flight only when the last waiting caller cancels.
+- 7ce1e6c: Drop a channel subscription once the last waiter for it is gone, including when a subscribe completes after its wait already settled, instead of tracking it until close().
+- 0e0836c: Recover the Redis coordinator from a transient connection error instead of disabling it permanently: `close()`, an `end` event or a `close`/`end` client status stay terminal, an `error` is cleared once the client reports `ready`, and a broken subscription connection no longer blocks `acquire()`.
+- 6fed389: Reject a waiter when its subscribe call fails with a closed-connection error, instead of leaving the wait pending forever and surfacing the translation as an unhandled rejection.
+- 392c77f: Release the coordination lease when the ownership recheck finds a value another process cached, instead of holding ownership until it expires.
+
 ## 0.2.1
 
 ### Patch Changes

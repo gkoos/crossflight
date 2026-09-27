@@ -52,6 +52,8 @@ export interface WrapOptions {
   ttl?: number
   /** Lease TTL for this call; defaults to `defaultTtlMs`. */
   leaseTtlMs?: number
+  /** Whole-flight deadline for this call; defaults to `defaultFlightDeadlineMs`. */
+  flightDeadlineMs?: number
   signal?: AbortSignal
   timeoutMs?: number
   failureMode?: CoordinationFailureMode
@@ -78,6 +80,34 @@ export interface CrossflightOptions {
   maxRetryAttempts?: number
   retryBackoff?: (attempt: number) => number
   failureMode?: CoordinationFailureMode
+  /**
+   * Whole-flight deadline in ms, measured from the moment the flight is
+   * created. When it passes the flight is aborted: callers waiting on it reject
+   * with `CoordinationTimeoutError`, the owner abandons its lease, and a caller
+   * that arrives afterwards is rejected at once instead of starting a new
+   * flight. The call that creates a flight decides the budget its joiners
+   * inherit, and it applies in every failure mode - a `fail-open` fallback
+   * could not run on an already aborted signal anyway. Reads are raced with the
+   * flight's signal, so a stalled read is bounded as well; the cache write is
+   * the one step that cannot be interrupted and is allowed to finish.
+   *
+   * Unset means the flight has no deadline and each caller's own `timeoutMs` is
+   * the only bound.
+   */
+  defaultFlightDeadlineMs?: number
   onEvent?: (event: CrossflightEvent) => void
   onEventError?: (error: unknown) => void
+  /**
+   * Cache a loader result of `undefined`. The built-in adapters report a
+   * stored `undefined` as a miss, so without this a loader that resolves
+   * `undefined` runs again for every caller.
+   *
+   * While enabled, every value Crossflight writes goes into the reserved
+   * envelope `{ "__crossflight_envelope__": 1, value }` and is unwrapped on
+   * read, so a loader value can be anything - including an object that looks
+   * like the envelope - and still come back exactly as it was. Raw values
+   * written by a process without the option still read back as they were, but
+   * every process sharing the cache has to agree on this setting.
+   */
+  cacheUndefined?: boolean
 }
