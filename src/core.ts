@@ -395,8 +395,14 @@ export function createCrossflight({
       // another owner, so they stay out of the reported metric.
       let waitedMs = 0
 
+      // A cache read carries no signal of its own, so race it with the flight's:
+      // a stalled read must not hold the flight past its deadline. Losing the
+      // race is safe - a read has no side effects and is drained, not cancelled.
+      const readCache = (): Promise<CacheLookup<T>> =>
+        raceWithAbort(cache.get<T>(key), controller.signal)
+
       const attempt = async (): Promise<T> => {
-        const cached = await cache.get<T>(key)
+        const cached = await readCache()
         if (cached.hit) {
           emit({ type: 'hit', key, waitedMs: 0 })
           return cached.value
@@ -449,7 +455,7 @@ export function createCrossflight({
 
             attempt += 1
 
-            const retry = await cache.get<T>(key)
+            const retry = await readCache()
             if (retry.hit) {
               emit({ type: 'hit', key, waitedMs })
               return retry.value
@@ -487,7 +493,7 @@ export function createCrossflight({
         emit({ type: 'ownership_acquired', key })
 
         try {
-          const recheck = await cache.get<T>(key)
+          const recheck = await readCache()
           if (recheck.hit) {
             // Another owner filled the cache while we were acquiring, so this
             // lease protects nothing: release it rather than hold it to its TTL.
@@ -576,6 +582,12 @@ export function createCrossflight({
           }
 
           // Ownership is deliberately held until the write settles: a cache
+          // write has no signal, so releasing the lease early would let a
+          // replacement owner publish a newer value that this late, stale
+          // write could then overwrite. The flight deadline cannot break that:
+          // its abort either fires before the ownership check above - and the
+          // flight abandons without writing - or after it, where the lease was
+          // just renewed and stays held until the write settles.
           // write has no signal, so releasing the lease early would let a
           // replacement owner publish a newer value that this late, stale
           // write could then overwrite.

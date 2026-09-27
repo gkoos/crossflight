@@ -147,7 +147,7 @@ By default a flight has no deadline of its own: each caller's `timeoutMs` bounds
 
 The deadline is a latency budget rather than a coordination failure, so it applies in both failure modes: `fail-open` cannot fall back to running the loader, because the flight's signal is already aborted - a loader that received that signal will have stopped, or will stop as soon as it observes it. A caller's own `timeoutMs` still bounds that caller, `maxRetryAttempts` still bounds the distributed retry loop, and `leaseTtlMs` still bounds ownership; the flight deadline is what bounds the flight as a whole.
 
-A flight that is already inside a step which cannot be interrupted - a cache write, a command already in flight - still finishes and hands its value to the callers still attached to it. The deadline bounds how long the flight waits for work, and aborting it is what releases the lease.
+Cache reads are raced with the flight's signal, so a stalled read cannot hold the flight past the deadline either. The cache write is the one step that cannot be interrupted: it still finishes and hands its value to the callers still attached to the flight. The deadline bounds how long the flight waits for work, and aborting it is what releases the lease.
 
 ### Undefined results
 
@@ -159,7 +159,7 @@ Raw values written by a process that has the option off still read back as they 
 
 ## Errors
 
-When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when either the per-call timeout elapses or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is thrown to the owner process when a periodic lease renewal confirms the lease is gone (`renew()` returns `false`); it surfaces through `onEvent` as a `failed` event and the owner's `wrap()` call rejects.
+When coordination fails, Crossflight throws one of four typed errors, all extending `CoordinationError`. `CoordinationClosedError` is thrown if `close()` is called while a `wrap()` is still running. `CoordinationTimeoutError` is thrown when the per-call timeout elapses, the flight deadline passes, or the distributed retry limit is exhausted, and carries a `key` property. `OwnershipLostError` is thrown to the owner process when a periodic lease renewal confirms the lease is gone (`renew()` returns `false`); it surfaces through `onEvent` as a `failed` event and the owner's `wrap()` call rejects.
 
 | Class | When thrown |
 | --- | --- |

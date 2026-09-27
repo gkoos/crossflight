@@ -1660,6 +1660,147 @@ describe('crossflight core', () => {
 
       await crossflight.close()
     })
+
+    it('bounds a stalled cache read with the deadline', async () => {
+      const cache = {
+        async get<T>(): Promise<{ hit: true; value: T }> {
+          await new Promise(resolve => setTimeout(resolve, 400))
+          return { hit: true, value: 'late' as unknown as T }
+        },
+        async set() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        defaultFlightDeadlineMs: 30,
+      })
+      let loadRuns = 0
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap('deadline:read', () => {
+          loadRuns += 1
+          return 'value'
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      // The read is raced with the flight's signal, so the caller is rejected
+      // at the deadline rather than when the read finally settles.
+      expect(Date.now() - startedAt).toBeLessThan(200)
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
+
+    it('honours a per-call deadline with no factory default', async () => {
+      const cache = slowWriteCache(0)
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+      })
+
+      const startedAt = Date.now()
+
+      await expect(
+        crossflight.wrap('deadline:per-call', stall, { flightDeadlineMs: 30 })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(Date.now() - startedAt).toBeLessThan(200)
+
+      await expect(
+        crossflight.wrap('deadline:per-call-fast', async () => 'value', {
+          flightDeadlineMs: 500,
+        })
+      ).resolves.toBe('value')
+
+      await crossflight.close()
+    })
+
+    it('reports the deadline rather than a concurrent coordination failure', async () => {
+      const cache = slowWriteCache(0)
+      let acquireCalls = 0
+      const coordinator = {
+        async acquire() {
+          acquireCalls += 1
+          await new Promise(resolve => setTimeout(resolve, 100))
+          throw new Error('coordinator down')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      await expect(
+        crossflight.wrap('deadline:acquire', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(acquireCalls).toBe(1)
+
+      await crossflight.close()
+    })
+
+    it('reports the deadline when it lands during the distributed wait', async () => {
+      const cache = slowWriteCache(0)
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange(_key: string, options?: { signal?: AbortSignal }) {
+          const signal = options?.signal
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            })
+          })
+        },
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      await expect(
+        crossflight.wrap('deadline:wait', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      await crossflight.close()
+    })
+
+    it('does not run a fail-open fallback on an already aborted flight', async () => {
+      const cache = slowWriteCache(0)
+      let loadRuns = 0
+      const coordinator = {
+        async acquire() {
+          await new Promise(resolve => setTimeout(resolve, 100))
+          throw new Error('coordinator down')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        defaultFlightDeadlineMs: 30,
+      })
+
+      await expect(
+        crossflight.wrap('deadline:aborted-fallback', () => {
+          loadRuns += 1
+          return 'value'
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(loadRuns).toBe(0)
+
+      await crossflight.close()
+    })
   })
 
   describe('failed event deduplication', () => {
