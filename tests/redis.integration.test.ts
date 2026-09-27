@@ -817,6 +817,76 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('does not track a channel when the subscribe resolves after the wait settled', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const key = 'redis:subscribe:late-success:key'
+    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
+
+    subscriptionClient.subscribe = async () => {
+      await new Promise(resolve => setTimeout(resolve, 60))
+      return await originalSubscribe(channel)
+    }
+
+    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect([...internals.subscribedChannels]).toEqual([])
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+    expect(subscriptionClient.listenerCount('message')).toBe(0)
+
+    subscriptionClient.subscribe = originalSubscribe
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('keeps a newer waiter subscribed when an older subscribe resolves late', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const key = 'redis:subscribe:late-success-shared:key'
+    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
+    let slowSubscribe = true
+
+    subscriptionClient.subscribe = async () => {
+      if (slowSubscribe) {
+        slowSubscribe = false
+        await new Promise(resolve => setTimeout(resolve, 60))
+      }
+
+      return await originalSubscribe(channel)
+    }
+
+    // The first waiter times out while its subscribe is still in flight.
+    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
+
+    // A second waiter for the same channel subscribes normally and tracks it.
+    const second = coordinator.waitForChange(key, { timeoutMs: 400 })
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect([...internals.subscribedChannels]).toEqual([channel])
+
+    // The late subscribe of the first waiter must not tear it down.
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect([...internals.subscribedChannels]).toEqual([channel])
+    expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
+
+    await expect(second).resolves.toBeUndefined()
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+
+    subscriptionClient.subscribe = originalSubscribe
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('throws when waitForChange is called on a closed coordinator', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)

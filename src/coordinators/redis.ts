@@ -388,6 +388,18 @@ export class RedisCoordinator implements Coordinator {
         async () => await this.subscriptionClient.subscribe(channel)
       )
         .then(() => {
+          if (settled) {
+            // The wait settled while the subscribe was in flight, so nothing is
+            // waiting on this channel: drop it again - unless a newer waiter for
+            // the same channel has already claimed it.
+            if (!this.subscribedChannels.has(channel)) {
+              void this.subscriptionClient
+                .unsubscribe(channel)
+                .catch(() => undefined)
+            }
+            return
+          }
+
           this.subscribedChannels.add(channel)
         })
         .catch((error) => {
