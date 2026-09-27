@@ -130,12 +130,21 @@ All options passed to `createCrossflight()`:
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
+| `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` by writing every value into a reserved envelope (see [undefined results](#undefined-results)) |
 
 Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
 
 The cache lifetime and the lease lifetime are separate: `ttl` controls only how long the value is cached, while the coordination lease uses `leaseTtlMs` when a call passes it, otherwise `defaultTtlMs`. A short cache lifetime therefore cannot expire the lease mid-load, and a long one cannot keep a crashed owner's lease alive. Lease TTLs are floored at 50 ms - twice the minimum renewal interval - so a lease always outlives at least one renewal.
 
 The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
+
+### Undefined results
+
+Every built-in adapter reports a stored `undefined` as a miss, because that is what the underlying backends return for a missing key. A loader that resolves `undefined` is therefore never cached: each caller runs it again.
+
+`cacheUndefined: true` closes that gap. While it is on, every value Crossflight writes goes into the reserved envelope `{ "__crossflight_envelope__": 1, value }` - a loader result of `undefined` is the same envelope without a `value` key - and is unwrapped on read. Wrapping every value is what makes the format unambiguous: whatever your loader returns comes back exactly as it was, including an object that looks like the envelope itself.
+
+Raw values written by a process that has the option off still read back as they were. Two processes sharing a cache, however, have to agree on the setting: an option-off process reading an enveloped value sees the envelope, not the value, and anything else reading those keys directly has to unwrap it too.
 
 ## Errors
 
