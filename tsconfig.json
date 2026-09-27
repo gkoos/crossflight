@@ -5,6 +5,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "allowJs": true,
     "declaration": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
@@ -15,6 +16,13 @@
     "types": ["node", "vitest/globals"],
     "noEmit": false
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "tools/**/*.ts", "scripts/**/*.js"],
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "tools/**/*.ts",
+    "benchmarks/**/*.ts",
+    "*.config.ts",
+    "scripts/**/*.js"
+  ],
   "exclude": ["node_modules", "dist"]
 }

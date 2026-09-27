@@ -28,7 +28,7 @@ function startupNodes(): ClusterNode[] {
     return DEFAULT_NODES
   }
 
-  return configured.split(',').map(entry => {
+  return configured.split(',').map((entry) => {
     const [host, port] = entry.trim().split(':')
     return { host, port: Number(port) }
   })
@@ -70,12 +70,12 @@ describe.runIf(shouldRun)('redis cluster integration', () => {
 
     const lines = clusterNodesRaw
       .split('\n')
-      .map(line => line.trim())
+      .map((line) => line.trim())
       .filter(Boolean)
 
     expect(lines.length).toBeGreaterThanOrEqual(6)
-    expect(lines.some(line => line.includes(':7001'))).toBe(true)
-    expect(lines.some(line => line.includes(':7006'))).toBe(true)
+    expect(lines.some((line) => line.includes(':7001'))).toBe(true)
+    expect(lines.some((line) => line.includes(':7006'))).toBe(true)
     expect(await client.ping()).toBe('PONG')
   })
 
@@ -119,7 +119,7 @@ describe.runIf(shouldRun)('redis cluster integration', () => {
 
     const waiting = waiter.waitForChange(key, { timeoutMs: 2000 })
     // Let the subscription settle before the change is signalled.
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise((resolve) => setTimeout(resolve, 100))
 
     const startedAt = Date.now()
     await lease!.complete()

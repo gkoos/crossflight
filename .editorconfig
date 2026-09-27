@@ -1,0 +1,9 @@
+# Keeps editors aligned with the line-ending policy declared in .gitattributes,
+# so a save never re-introduces CRLF that `prettier --check` (endOfLine: "lf")
+# would reject and that Git would only silently normalize on commit.
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8

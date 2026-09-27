@@ -6,7 +6,11 @@ export interface CacheManagerLike {
    * cache-manager resolves the value it stored, so its `set` is not a
    * `Promise<void>`. The value is ignored here: accept whatever it resolves.
    */
-  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<unknown>
+  set<T>(
+    key: string,
+    value: T,
+    ttl?: number | CacheSetOptions
+  ): Promise<unknown>
 }
 
 export function cacheManagerAdapter(cache: CacheManagerLike): CacheAdapter {

@@ -28,13 +28,17 @@ describe('cache adapters', () => {
       hit: true,
       value: { ok: true },
     })
-    await expect(adapter.get<number>('missing')).resolves.toEqual({ hit: false })
+    await expect(adapter.get<number>('missing')).resolves.toEqual({
+      hit: false,
+    })
   })
 
   it('adapts a cache-manager style cache — set without TTL', async () => {
     const setCalls: Array<[string, unknown, unknown]> = []
     const adapter = cacheManagerAdapter({
-      async get<T>(_key: string): Promise<T | undefined> { return undefined },
+      async get<T>(_key: string): Promise<T | undefined> {
+        return undefined
+      },
       async set<T>(key: string, value: T, ttl?: number): Promise<void> {
         setCalls.push([key, value, ttl])
       },
@@ -62,13 +66,17 @@ describe('cache adapters', () => {
       hit: true,
       value: 'value',
     })
-    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({
+      hit: false,
+    })
   })
 
   it('adapts a Cacheable style cache — set without TTL', async () => {
     const setCalls: Array<[string, unknown, unknown]> = []
     const adapter = cacheableAdapter({
-      async get<T>(_key: string): Promise<T | undefined> { return undefined },
+      async get<T>(_key: string): Promise<T | undefined> {
+        return undefined
+      },
       async set<T>(key: string, value: T, ttl?: number): Promise<void> {
         setCalls.push([key, value, ttl])
       },
@@ -82,7 +90,9 @@ describe('cache adapters', () => {
   it('adapts a Cacheable style cache — set with TTL', async () => {
     const setCalls: Array<[string, unknown, unknown]> = []
     const adapter = cacheableAdapter({
-      async get<T>(_key: string): Promise<T | undefined> { return undefined },
+      async get<T>(_key: string): Promise<T | undefined> {
+        return undefined
+      },
       async set<T>(key: string, value: T, ttl?: number): Promise<void> {
         setCalls.push([key, value, ttl])
       },
@@ -105,7 +115,7 @@ describe('cache adapters', () => {
       value: 42,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 90))
+    await new Promise((resolve) => setTimeout(resolve, 90))
     await expect(adapter.get<number>('gamma')).resolves.toEqual({ hit: false })
 
     setSpy.mockRestore()
@@ -122,12 +132,14 @@ describe('cache adapters', () => {
       value: 'value',
     })
 
-    await new Promise(resolve => setTimeout(resolve, 40))
+    await new Promise((resolve) => setTimeout(resolve, 40))
     await expect(adapter.get<string>('delta')).resolves.toEqual({
       hit: true,
       value: 'value',
     })
-    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({
+      hit: false,
+    })
   })
 
   it('adapts a real cache-manager cache and applies the requested TTL', async () => {
@@ -143,7 +155,7 @@ describe('cache adapters', () => {
       value: 42,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 90))
+    await new Promise((resolve) => setTimeout(resolve, 90))
     await expect(adapter.get<number>('theta')).resolves.toEqual({ hit: false })
 
     setSpy.mockRestore()
@@ -159,7 +171,9 @@ describe('cache adapters', () => {
       hit: true,
       value: 'value',
     })
-    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({
+      hit: false,
+    })
   })
 
   it('adapts a real Cacheable instance and applies the requested TTL', async () => {
@@ -175,7 +189,7 @@ describe('cache adapters', () => {
       value: 42,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 90))
+    await new Promise((resolve) => setTimeout(resolve, 90))
     await expect(adapter.get<number>('kappa')).resolves.toEqual({ hit: false })
 
     setSpy.mockRestore()
@@ -191,6 +205,8 @@ describe('cache adapters', () => {
       hit: true,
       value: 'value',
     })
-    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({
+      hit: false,
+    })
   })
 })

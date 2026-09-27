@@ -102,7 +102,9 @@ type MutableEvalClient = IORedis & {
 
 describe.runIf(shouldRun)('redis coordinator integration', () => {
   it('uses the redis coordinator path for a basic miss', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const cache = createRedisCache(client)
 
     const crossflight = createCrossflight({
@@ -110,7 +112,11 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       coordinator: redisCoordinator(client),
     })
 
-    const value = await crossflight.wrap('redis:test:key', async () => ({ hello: 'world' }), { ttl: 5000 })
+    const value = await crossflight.wrap(
+      'redis:test:key',
+      async () => ({ hello: 'world' }),
+      { ttl: 5000 }
+    )
 
     expect(value).toEqual({ hello: 'world' })
     await crossflight.close()
@@ -118,7 +124,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('coalesces concurrent redis misses into a single loader execution', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const cache = createRedisCache(client)
 
     const crossflight = createCrossflight({
@@ -130,7 +138,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     const loader = async () => {
       loadRuns += 1
-      await new Promise(resolve => setTimeout(resolve, 40))
+      await new Promise((resolve) => setTimeout(resolve, 40))
       return { hello: 'world' }
     }
 
@@ -147,15 +155,21 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('allows a new lease after the previous ttl expires', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
-    const firstLease = await coordinator.acquire('redis:lease:key', { ttlMs: 50 })
+    const firstLease = await coordinator.acquire('redis:lease:key', {
+      ttlMs: 50,
+    })
     expect(firstLease).not.toBeNull()
 
-    await new Promise(resolve => setTimeout(resolve, 120))
+    await new Promise((resolve) => setTimeout(resolve, 120))
 
-    const secondLease = await coordinator.acquire('redis:lease:key', { ttlMs: 100 })
+    const secondLease = await coordinator.acquire('redis:lease:key', {
+      ttlMs: 100,
+    })
     expect(secondLease).not.toBeNull()
 
     await secondLease?.complete()
@@ -164,19 +178,27 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not allow a stale lease to revive after a newer owner already owns the key', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
-    const firstLease = await coordinator.acquire('redis:stale:revive:key', { ttlMs: 40 })
+    const firstLease = await coordinator.acquire('redis:stale:revive:key', {
+      ttlMs: 40,
+    })
     expect(firstLease).not.toBeNull()
 
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await new Promise((resolve) => setTimeout(resolve, 80))
 
-    const secondLease = await coordinator.acquire('redis:stale:revive:key', { ttlMs: 200 })
+    const secondLease = await coordinator.acquire('redis:stale:revive:key', {
+      ttlMs: 200,
+    })
     expect(secondLease).not.toBeNull()
 
     await firstLease!.renew()
-    const staleKey = createHash('sha256').update('redis:stale:revive:key').digest('hex')
+    const staleKey = createHash('sha256')
+      .update('redis:stale:revive:key')
+      .digest('hex')
     const currentOwner = await client.get(`crossflight:{${staleKey}}:flight`)
     expect(currentOwner).not.toBeNull()
     expect(currentOwner).not.toBe(firstLease!.key)
@@ -187,8 +209,12 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('notifies waiters when another process changes the same redis key', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
-    const otherClient = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
+    const otherClient = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const otherCoordinator = redisCoordinator(otherClient)
 
@@ -196,7 +222,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
 
     const waiter = coordinator.waitForChange(key, { timeoutMs: 500 })
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await new Promise((resolve) => setTimeout(resolve, 25))
 
     await otherClient.publish(channel, `${Date.now()}`)
     await expect(waiter).resolves.toBeUndefined()
@@ -208,19 +234,28 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('returns from waitForChange even when no notification arrives', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
-    const lease = await coordinator.acquire('redis:waiter:missed:notification', { ttlMs: 200 })
+    const lease = await coordinator.acquire(
+      'redis:waiter:missed:notification',
+      { ttlMs: 200 }
+    )
     expect(lease).not.toBeNull()
 
-    const wait = coordinator.waitForChange('redis:waiter:missed:notification', { timeoutMs: 50 })
+    const wait = coordinator.waitForChange('redis:waiter:missed:notification', {
+      timeoutMs: 50,
+    })
 
     // Guard against regressions where waitForChange resolves immediately
     // without waiting for either a message or timeout.
     const earlyProbe = Promise.race([
       wait.then(() => 'resolved' as const),
-      new Promise<'probe-timeout'>(resolve => setTimeout(() => resolve('probe-timeout'), 10)),
+      new Promise<'probe-timeout'>((resolve) =>
+        setTimeout(() => resolve('probe-timeout'), 10)
+      ),
     ])
     await expect(earlyProbe).resolves.toBe('probe-timeout')
 
@@ -232,18 +267,27 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('allows a fresh coordinator to acquire after the old lease expires, even if the old coordinator was closed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
-    const firstLease = await coordinator.acquire('redis:close:reacquire:key', { ttlMs: 80 })
+    const firstLease = await coordinator.acquire('redis:close:reacquire:key', {
+      ttlMs: 80,
+    })
     expect(firstLease).not.toBeNull()
 
     await coordinator.close()
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await new Promise((resolve) => setTimeout(resolve, 150))
 
-    const freshClient = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const freshClient = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const freshCoordinator = redisCoordinator(freshClient)
-    const secondLease = await freshCoordinator.acquire('redis:close:reacquire:key', { ttlMs: 100 })
+    const secondLease = await freshCoordinator.acquire(
+      'redis:close:reacquire:key',
+      { ttlMs: 100 }
+    )
     expect(secondLease).not.toBeNull()
 
     await secondLease?.complete()
@@ -253,20 +297,30 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not let a stale lease delete a newer owner', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
-    const firstLease = await coordinator.acquire('redis:stale:key', { ttlMs: 50 })
+    const firstLease = await coordinator.acquire('redis:stale:key', {
+      ttlMs: 50,
+    })
     expect(firstLease).not.toBeNull()
 
-    await new Promise(resolve => setTimeout(resolve, 120))
+    await new Promise((resolve) => setTimeout(resolve, 120))
 
-    const secondLease = await coordinator.acquire('redis:stale:key', { ttlMs: 200 })
+    const secondLease = await coordinator.acquire('redis:stale:key', {
+      ttlMs: 200,
+    })
     expect(secondLease).not.toBeNull()
 
     await firstLease?.complete()
-    const staleKey = createHash('sha256').update('redis:stale:key').digest('hex')
-    const ownerValueAfterStaleComplete = await client.get(`crossflight:{${staleKey}}:flight`)
+    const staleKey = createHash('sha256')
+      .update('redis:stale:key')
+      .digest('hex')
+    const ownerValueAfterStaleComplete = await client.get(
+      `crossflight:{${staleKey}}:flight`
+    )
     expect(ownerValueAfterStaleComplete).not.toBeNull()
 
     await secondLease?.complete()
@@ -275,7 +329,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('returns null when a key is already leased by another owner', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:already-leased:key'
@@ -291,13 +347,17 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('uses a namespaced, hashed Redis key for lease ownership', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, {
       namespace: 'demo-ns',
-      hashKey: key => `hashed:${key}`,
+      hashKey: (key) => `hashed:${key}`,
     })
 
-    const lease = await coordinator.acquire('redis:namespace:key', { ttlMs: 500 })
+    const lease = await coordinator.acquire('redis:namespace:key', {
+      ttlMs: 500,
+    })
     expect(lease).not.toBeNull()
 
     const matchingKeys = await client.keys('demo-ns:*:flight')
@@ -310,27 +370,39 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('rejects new acquisition attempts after the coordinator is closed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     await coordinator.close()
 
-    await expect(coordinator.acquire('redis:closed:after:close', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:after:close', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
     await client.quit()
   })
 
   it('rejects operations when the underlying redis client has already been closed externally', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     await client.quit()
 
-    await expect(coordinator.acquire('redis:closed:external', { ttlMs: 500 })).rejects.toThrow(/closed|disconnected|connection/i)
-    await expect(coordinator.waitForChange('redis:closed:external', { timeoutMs: 50 })).rejects.toThrow(/closed|disconnected|connection/i)
+    await expect(
+      coordinator.acquire('redis:closed:external', { ttlMs: 500 })
+    ).rejects.toThrow(/closed|disconnected|connection/i)
+    await expect(
+      coordinator.waitForChange('redis:closed:external', { timeoutMs: 50 })
+    ).rejects.toThrow(/closed|disconnected|connection/i)
   })
 
   it('treats disconnected acquire errors as closed coordinator errors', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const mutableClient = client as MutableEvalClient
 
@@ -338,15 +410,21 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('socket disconnected unexpectedly')
     }
 
-    await expect(coordinator.acquire('redis:closed:disconnected', { ttlMs: 500 })).rejects.toThrow(/closed/i)
-    await expect(coordinator.acquire('redis:closed:disconnected:again', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:disconnected', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:disconnected:again', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
 
     await coordinator.close()
     await client.quit()
   })
 
   it('treats connection lost acquire errors as closed coordinator errors', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const mutableClient = client as MutableEvalClient
 
@@ -354,14 +432,18 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('connection to redis was lost')
     }
 
-    await expect(coordinator.acquire('redis:closed:lost', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:lost', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
 
     await coordinator.close()
     await client.quit()
   })
 
   it('treats connection is closed acquire errors as closed coordinator errors', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const mutableClient = client as MutableEvalClient
 
@@ -369,14 +451,18 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('Connection is closed')
     }
 
-    await expect(coordinator.acquire('redis:closed:is-closed', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:is-closed', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
 
     await coordinator.close()
     await client.quit()
   })
 
   it('treats connection closed acquire errors as closed coordinator errors', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const mutableClient = client as MutableEvalClient
 
@@ -384,14 +470,18 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('Socket connection closed by peer')
     }
 
-    await expect(coordinator.acquire('redis:closed:connection-closed', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:closed:connection-closed', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
 
     await coordinator.close()
     await client.quit()
   })
 
   it('recovers after a transient client error once the client reports ready', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     Object.defineProperty(client, 'status', {
@@ -400,7 +490,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     })
     client.emit('error', new Error('transient blip'))
 
-    await expect(coordinator.acquire('redis:recover:key', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+    await expect(
+      coordinator.acquire('redis:recover:key', { ttlMs: 500 })
+    ).rejects.toThrow(/closed/i)
 
     Object.defineProperty(client, 'status', {
       configurable: true,
@@ -417,7 +509,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('keeps acquire available when the subscription connection is broken', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
 
@@ -430,7 +524,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     ).rejects.toThrow(/closed/i)
 
     // ...but acquire uses the command connection, which is still healthy.
-    const lease = await coordinator.acquire('redis:sub:decoupled', { ttlMs: 500 })
+    const lease = await coordinator.acquire('redis:sub:decoupled', {
+      ttlMs: 500,
+    })
     expect(lease).not.toBeNull()
     await lease!.abandon()
 
@@ -439,7 +535,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not mask non-closed acquire errors that only mention connection', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const mutableClient = client as MutableEvalClient
 
@@ -447,14 +545,18 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('connection timeout while writing command')
     }
 
-    await expect(coordinator.acquire('redis:connection:timeout', { ttlMs: 500 })).rejects.toThrow('connection timeout while writing command')
+    await expect(
+      coordinator.acquire('redis:connection:timeout', { ttlMs: 500 })
+    ).rejects.toThrow('connection timeout while writing command')
 
     await coordinator.close()
     await client.quit()
   })
 
   it('removes its redis lifecycle listeners when closed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     expect(client.listenerCount('error')).toBeGreaterThan(0)
@@ -468,7 +570,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('publishes a change notification when a lease is completed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:complete:notify:key'
@@ -476,7 +580,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     expect(lease).not.toBeNull()
 
     const waiter = coordinator.waitForChange(key, { timeoutMs: 1000 })
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await new Promise((resolve) => setTimeout(resolve, 25))
 
     await lease!.complete()
 
@@ -489,7 +593,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('publishes a change notification when a lease is renewed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:renew:notify:key'
@@ -497,7 +603,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     expect(lease).not.toBeNull()
 
     const waiter = coordinator.waitForChange(key, { timeoutMs: 1000 })
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await new Promise((resolve) => setTimeout(resolve, 25))
 
     const renewed = await lease!.renew()
     expect(renewed).toBe(true)
@@ -509,7 +615,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('keeps the lease when the acquisition notification fails', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:acquire:notify:error:key'
@@ -539,7 +647,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('keeps ownership when the renewal notification fails', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:renew:notify:error:key'
@@ -561,7 +671,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('releases the lease when the release notification fails', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const completedKey = 'redis:complete:notify:error:key'
@@ -601,7 +713,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('reports an acquisition without waiting for a stalled notification', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     // The command timeout is larger than the lease, so an acquisition that
     // waited for the wake-up would report a lease that has already expired.
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
@@ -632,7 +746,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('reports a renewal without waiting for a stalled notification', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
 
     const key = 'redis:renew:notify:stall:key'
@@ -663,7 +779,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('reports a release without waiting for a stalled notification', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 600 })
 
     const completedKey = 'redis:complete:notify:stall:key'
@@ -705,9 +823,10 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
-
   it('throws AbortError when acquire is called with an already-aborted signal', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const controller = new AbortController()
@@ -722,14 +841,19 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws AbortError when waitForChange is called with an already-aborted signal', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const controller = new AbortController()
     controller.abort()
 
     await expect(
-      coordinator.waitForChange('redis:aborted:wait:signal', { signal: controller.signal, timeoutMs: 100 })
+      coordinator.waitForChange('redis:aborted:wait:signal', {
+        signal: controller.signal,
+        timeoutMs: 100,
+      })
     ).rejects.toMatchObject({ name: 'AbortError' })
 
     await coordinator.close()
@@ -737,7 +861,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('aborts an in-progress waitForChange when the signal fires', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const controller = new AbortController()
 
@@ -746,7 +872,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       timeoutMs: 5000,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 30))
+    await new Promise((resolve) => setTimeout(resolve, 30))
     controller.abort()
 
     await expect(waiter).rejects.toMatchObject({ name: 'AbortError' })
@@ -755,8 +881,12 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('ignores pub/sub messages for a different channel', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
-    const publishClient = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
+    const publishClient = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:channel:filter:key'
@@ -764,7 +894,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     // Start waiting on the real channel
     const waiter = coordinator.waitForChange(key, { timeoutMs: 200 })
-    await new Promise(resolve => setTimeout(resolve, 30))
+    await new Promise((resolve) => setTimeout(resolve, 30))
 
     // Publish to a different channel — should be ignored
     await publishClient.publish(wrongChannel, `${Date.now()}`)
@@ -780,7 +910,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws when acquire is called after the client disconnects externally', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     // Force the client into a closed state by quitting then trying to use it
@@ -795,7 +927,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('treats a client already in close status as closed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     Object.defineProperty(client, 'status', {
@@ -811,7 +945,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('publishes a change notification when a lease is abandoned', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:abandon:notify:key'
@@ -820,7 +956,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     // Start waiting for change before abandoning
     const waiter = coordinator.waitForChange(key, { timeoutMs: 1000 })
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await new Promise((resolve) => setTimeout(resolve, 25))
 
     await lease!.abandon()
 
@@ -834,15 +970,21 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('ignores non-matching in-process message events while waiting', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
 
     const key = 'redis:channel:internal-filter:key'
     const waiter = coordinator.waitForChange(key, { timeoutMs: 200 })
 
-    await new Promise(resolve => setTimeout(resolve, 30))
-    internals.subscriptionClient.emit('message', 'crossflight:change:not-matching', 'x')
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    internals.subscriptionClient.emit(
+      'message',
+      'crossflight:change:not-matching',
+      'x'
+    )
 
     const startedAt = Date.now()
     await expect(waiter).resolves.toBeUndefined()
@@ -853,13 +995,17 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('propagates subscription failures from waitForChange', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
 
-    subscriptionClient.subscribe = () => Promise.reject(new Error('subscribe failed'))
+    subscriptionClient.subscribe = () =>
+      Promise.reject(new Error('subscribe failed'))
 
     await expect(
       coordinator.waitForChange('redis:subscribe:fail:key', { timeoutMs: 100 })
@@ -871,16 +1017,22 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('rejects the waiter when subscribing fails with a closed connection', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
 
-    subscriptionClient.subscribe = () => Promise.reject(new Error('Connection is closed'))
+    subscriptionClient.subscribe = () =>
+      Promise.reject(new Error('Connection is closed'))
 
     await expect(
-      coordinator.waitForChange('redis:subscribe:closed:key', { timeoutMs: 200 })
+      coordinator.waitForChange('redis:subscribe:closed:key', {
+        timeoutMs: 200,
+      })
     ).rejects.toThrow(/closed/i)
 
     subscriptionClient.subscribe = originalSubscribe
@@ -889,16 +1041,21 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('propagates a non-error subscription failure unchanged', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
 
     subscriptionClient.subscribe = () => Promise.reject('subscribe unavailable')
 
     await expect(
-      coordinator.waitForChange('redis:subscribe:non-error:key', { timeoutMs: 100 })
+      coordinator.waitForChange('redis:subscribe:non-error:key', {
+        timeoutMs: 100,
+      })
     ).rejects.toBe('subscribe unavailable')
 
     subscriptionClient.subscribe = originalSubscribe
@@ -907,7 +1064,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('applies default lease and wait timeouts when options are omitted', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:defaults:key'
@@ -922,7 +1081,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not publish a change notification when abandoning a lost lease', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     const key = 'redis:abandon:lost:key'
@@ -932,7 +1093,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     // Spy after acquiring: a successful acquire publishes its own notification.
     const publish = vi.spyOn(client, 'publish')
 
-    await new Promise(resolve => setTimeout(resolve, 120))
+    await new Promise((resolve) => setTimeout(resolve, 120))
     await expect(lease!.abandon()).resolves.toBeUndefined()
 
     expect(publish).not.toHaveBeenCalled()
@@ -944,15 +1105,20 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('swallows a failed unsubscribe while closing an active waiter', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalUnsubscribe = subscriptionClient.unsubscribe.bind(subscriptionClient)
+    const originalUnsubscribe =
+      subscriptionClient.unsubscribe.bind(subscriptionClient)
     let unsubscribeCalls = 0
 
-    const waiter = coordinator.waitForChange('redis:close:unsubscribe:key', { timeoutMs: 200 })
-    await new Promise(resolve => setTimeout(resolve, 50))
+    const waiter = coordinator.waitForChange('redis:close:unsubscribe:key', {
+      timeoutMs: 200,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
 
     subscriptionClient.unsubscribe = () => {
       unsubscribeCalls += 1
@@ -971,7 +1137,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('propagates a non-error quit failure when closing', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
 
@@ -984,7 +1152,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('propagates a rejected command when a command timeout is configured', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 500 })
 
     client.eval = () => Promise.reject(new Error('eval failed'))
@@ -998,19 +1168,24 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('handles delayed subscribe rejection after wait timeout without hanging', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
 
     subscriptionClient.subscribe = async () => {
-      await new Promise(resolve => setTimeout(resolve, 80))
+      await new Promise((resolve) => setTimeout(resolve, 80))
       throw new Error('late subscribe failure')
     }
 
     await expect(
-      coordinator.waitForChange('redis:subscribe:late-fail:key', { timeoutMs: 20 })
+      coordinator.waitForChange('redis:subscribe:late-fail:key', {
+        timeoutMs: 20,
+      })
     ).resolves.toBeUndefined()
 
     subscriptionClient.subscribe = originalSubscribe
@@ -1019,22 +1194,27 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not track a channel when the subscribe resolves after the wait settled', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:late-success:key'
     const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
 
     subscriptionClient.subscribe = async () => {
-      await new Promise(resolve => setTimeout(resolve, 60))
+      await new Promise((resolve) => setTimeout(resolve, 60))
       return await originalSubscribe(channel)
     }
 
-    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await expect(
+      coordinator.waitForChange(key, { timeoutMs: 20 })
+    ).resolves.toBeUndefined()
+    await new Promise((resolve) => setTimeout(resolve, 80))
 
     expect([...internals.subscribedChannels]).toEqual([])
     expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
@@ -1047,11 +1227,14 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('keeps a newer waiter subscribed when an older subscribe resolves late', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:late-success-shared:key'
     const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
@@ -1060,22 +1243,24 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     subscriptionClient.subscribe = async () => {
       if (slowSubscribe) {
         slowSubscribe = false
-        await new Promise(resolve => setTimeout(resolve, 60))
+        await new Promise((resolve) => setTimeout(resolve, 60))
       }
 
       return await originalSubscribe(channel)
     }
 
     // The first waiter times out while its subscribe is still in flight.
-    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
+    await expect(
+      coordinator.waitForChange(key, { timeoutMs: 20 })
+    ).resolves.toBeUndefined()
 
     // A second waiter for the same channel subscribes normally and tracks it.
     const second = coordinator.waitForChange(key, { timeoutMs: 400 })
-    await new Promise(resolve => setTimeout(resolve, 60))
+    await new Promise((resolve) => setTimeout(resolve, 60))
     expect([...internals.subscribedChannels]).toEqual([channel])
 
     // The late subscribe of the first waiter must not tear it down.
-    await new Promise(resolve => setTimeout(resolve, 40))
+    await new Promise((resolve) => setTimeout(resolve, 40))
     expect([...internals.subscribedChannels]).toEqual([channel])
     expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
 
@@ -1089,11 +1274,14 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not drop a channel whose newer subscribe is still in flight', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:pending-claim:key'
     const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
@@ -1101,20 +1289,24 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     subscriptionClient.subscribe = async () => {
       subscribeCalls += 1
-      await new Promise(resolve => setTimeout(resolve, subscribeCalls === 1 ? 60 : 200))
+      await new Promise((resolve) =>
+        setTimeout(resolve, subscribeCalls === 1 ? 60 : 200)
+      )
       return await originalSubscribe(channel)
     }
 
     // The first waiter times out before its own subscribe resolves.
-    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
+    await expect(
+      coordinator.waitForChange(key, { timeoutMs: 20 })
+    ).resolves.toBeUndefined()
 
     // Its subscribe resolves while the second waiter is still subscribing.
     const second = coordinator.waitForChange(key, { timeoutMs: 300 })
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await new Promise((resolve) => setTimeout(resolve, 80))
 
     expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
 
-    await new Promise(resolve => setTimeout(resolve, 140))
+    await new Promise((resolve) => setTimeout(resolve, 140))
     expect([...internals.subscribedChannels]).toEqual([channel])
 
     await expect(second).resolves.toBeUndefined()
@@ -1127,17 +1319,20 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('drops a subscription that completes after the subscribe command timed out', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 20 })
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:command-timeout:key'
     const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
 
     subscriptionClient.subscribe = async () => {
-      await new Promise(resolve => setTimeout(resolve, 60))
+      await new Promise((resolve) => setTimeout(resolve, 60))
       return await originalSubscribe(channel)
     }
 
@@ -1146,11 +1341,14 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     ).rejects.toThrow(/timed out/)
 
     // The command timeout rejected the wait, but the subscribe still succeeded.
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await new Promise((resolve) => setTimeout(resolve, 80))
 
     expect([...internals.subscribedChannels]).toEqual([])
     expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
-    await expect(client.pubsub('NUMSUB', channel)).resolves.toEqual([channel, 0])
+    await expect(client.pubsub('NUMSUB', channel)).resolves.toEqual([
+      channel,
+      0,
+    ])
 
     subscriptionClient.subscribe = originalSubscribe
     unsubscribeSpy.mockRestore()
@@ -1159,7 +1357,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('keeps the channel while a second waiter for it is still waiting', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
@@ -1172,7 +1372,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     // The first waiter leaves while the second one still needs the channel.
     await expect(first).resolves.toBeUndefined()
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 20))
     expect([...internals.subscribedChannels]).toEqual([channel])
     expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
 
@@ -1186,7 +1386,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws when waitForChange is called on a closed coordinator', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     await coordinator.close()
@@ -1198,7 +1400,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('handles double close without throwing', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     await coordinator.close()
@@ -1207,7 +1411,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('unsubscribes tracked channels on close', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
@@ -1222,12 +1428,17 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('ignores a failed unsubscribe when a wait is cancelled', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
     const key = 'redis:wait:unsubscribe-failure:key'
-    const channel = 'crossflight:{' + createHash('sha256').update(key).digest('hex') + '}:change'
+    const channel =
+      'crossflight:{' +
+      createHash('sha256').update(key).digest('hex') +
+      '}:change'
     const unsubscribeSpy = vi
       .spyOn(subscriptionClient, 'unsubscribe')
       .mockRejectedValue(new Error('unsubscribe failed'))
@@ -1249,7 +1460,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('does not close the caller-owned redis client when coordinator closes', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
 
     await coordinator.close()
@@ -1259,32 +1472,38 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws a command timeout error when acquire exceeds commandTimeoutMs', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 20 })
     const mutableClient = client as MutableEvalClient
 
     mutableClient.eval = async () => {
-      await new Promise(resolve => setTimeout(resolve, 80))
+      await new Promise((resolve) => setTimeout(resolve, 80))
       return 1
     }
 
-    await expect(coordinator.acquire('redis:command-timeout:key', { ttlMs: 100 })).rejects.toThrow(
-      /timed out/i
-    )
+    await expect(
+      coordinator.acquire('redis:command-timeout:key', { ttlMs: 100 })
+    ).rejects.toThrow(/timed out/i)
 
     await coordinator.close()
     await client.quit()
   })
 
   it('throws a command timeout error when lease renew exceeds commandTimeoutMs', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 20 })
-    const lease = await coordinator.acquire('redis:renew:command-timeout:key', { ttlMs: 200 })
+    const lease = await coordinator.acquire('redis:renew:command-timeout:key', {
+      ttlMs: 200,
+    })
     expect(lease).not.toBeNull()
 
     const mutableClient = client as MutableEvalClient
     mutableClient.eval = async () => {
-      await new Promise(resolve => setTimeout(resolve, 80))
+      await new Promise((resolve) => setTimeout(resolve, 80))
       return 1
     }
 
@@ -1295,19 +1514,24 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws a command timeout error when waitForChange subscribe exceeds commandTimeoutMs', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client, { commandTimeoutMs: 20 })
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
-    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const originalSubscribe =
+      subscriptionClient.subscribe.bind(subscriptionClient)
 
     subscriptionClient.subscribe = async () => {
-      await new Promise(resolve => setTimeout(resolve, 80))
+      await new Promise((resolve) => setTimeout(resolve, 80))
       return 1
     }
 
     await expect(
-      coordinator.waitForChange('redis:wait:subscribe-timeout:key', { timeoutMs: 200 })
+      coordinator.waitForChange('redis:wait:subscribe-timeout:key', {
+        timeoutMs: 200,
+      })
     ).rejects.toThrow(/timed out/i)
 
     subscriptionClient.subscribe = originalSubscribe
@@ -1316,7 +1540,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('swallows closed subscription-client quit errors in close', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
@@ -1339,7 +1565,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('skips quitting a subscription client that is already closed', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
@@ -1359,7 +1587,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
   })
 
   it('throws non-closed subscription-client quit errors in close', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const coordinator = redisCoordinator(client)
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
@@ -1376,13 +1606,17 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       throw new Error('subscription quit failed')
     }
 
-    await expect(coordinator.close()).rejects.toThrow('subscription quit failed')
+    await expect(coordinator.close()).rejects.toThrow(
+      'subscription quit failed'
+    )
     client.disconnect()
     subscriptionClient.disconnect()
   })
 
   it('coalesces the same key across separate node processes', async () => {
-    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const client = new IORedis(
+      process.env.REDIS_URL ?? 'redis://localhost:6379'
+    )
     const key = 'redis:multi-process:key'
     const flightKey = createHash('sha256').update(key).digest('hex')
 
@@ -1402,7 +1636,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     expect(secondOutput.ok).toBe(true)
     expect(firstOutput.result.value).toBe('computed')
     expect(secondOutput.result.value).toBe('computed')
-    expect([firstOutput.result.count, secondOutput.result.count]).toEqual([1, 1])
+    expect([firstOutput.result.count, secondOutput.result.count]).toEqual([
+      1, 1,
+    ])
 
     await client.del(`crossflight:{${flightKey}}:flight`)
     await client.del(`crossflight:counter:${key}`)
@@ -1435,5 +1671,4 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     expect(duplicate).toHaveBeenCalledTimes(1)
     expect(subscriber.quit).toHaveBeenCalledTimes(1)
   })
-
 })
