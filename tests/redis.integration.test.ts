@@ -887,6 +887,103 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('does not drop a channel whose newer subscribe is still in flight', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const key = 'redis:subscribe:pending-claim:key'
+    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
+    let subscribeCalls = 0
+
+    subscriptionClient.subscribe = async () => {
+      subscribeCalls += 1
+      await new Promise(resolve => setTimeout(resolve, subscribeCalls === 1 ? 60 : 200))
+      return await originalSubscribe(channel)
+    }
+
+    // The first waiter times out before its own subscribe resolves.
+    await expect(coordinator.waitForChange(key, { timeoutMs: 20 })).resolves.toBeUndefined()
+
+    // Its subscribe resolves while the second waiter is still subscribing.
+    const second = coordinator.waitForChange(key, { timeoutMs: 300 })
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
+
+    await new Promise(resolve => setTimeout(resolve, 140))
+    expect([...internals.subscribedChannels]).toEqual([channel])
+
+    await expect(second).resolves.toBeUndefined()
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+
+    subscriptionClient.subscribe = originalSubscribe
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('drops a subscription that completes after the subscribe command timed out', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client, { commandTimeoutMs: 20 })
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
+    const key = 'redis:subscribe:command-timeout:key'
+    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
+
+    subscriptionClient.subscribe = async () => {
+      await new Promise(resolve => setTimeout(resolve, 60))
+      return await originalSubscribe(channel)
+    }
+
+    await expect(
+      coordinator.waitForChange(key, { timeoutMs: 200 })
+    ).rejects.toThrow(/timed out/)
+
+    // The command timeout rejected the wait, but the subscribe still succeeded.
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    expect([...internals.subscribedChannels]).toEqual([])
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+    await expect(client.pubsub('NUMSUB', channel)).resolves.toEqual([channel, 0])
+
+    subscriptionClient.subscribe = originalSubscribe
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
+  it('keeps the channel while a second waiter for it is still waiting', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+    const subscriptionClient = internals.subscriptionClient
+    const key = 'redis:subscribe:shared-claim:key'
+    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
+
+    const first = coordinator.waitForChange(key, { timeoutMs: 30 })
+    const second = coordinator.waitForChange(key, { timeoutMs: 300 })
+
+    // The first waiter leaves while the second one still needs the channel.
+    await expect(first).resolves.toBeUndefined()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect([...internals.subscribedChannels]).toEqual([channel])
+    expect(unsubscribeSpy).not.toHaveBeenCalledWith(channel)
+
+    await expect(second).resolves.toBeUndefined()
+    expect([...internals.subscribedChannels]).toEqual([])
+    expect(unsubscribeSpy).toHaveBeenCalledWith(channel)
+
+    unsubscribeSpy.mockRestore()
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('throws when waitForChange is called on a closed coordinator', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)
