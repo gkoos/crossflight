@@ -173,6 +173,7 @@ export class RedisCoordinator implements Coordinator {
   private readonly commandTimeoutMs?: number
   private readonly subscribedChannels = new Set<string>()
   private readonly channelWaiters = new Map<string, number>()
+  private readonly pendingWaits = new Set<() => void>()
   private readonly subscriptionClient: IORedis
   private closed = false
   private commandEnded = false
@@ -384,12 +385,18 @@ export class RedisCoordinator implements Coordinator {
       // waiter settled can see that another waiter still needs the channel.
       this.claimChannel(channel)
 
+      const cancelPendingWait = () => {
+        cleanup()
+        reject(new Error('Redis coordinator is closed'))
+      }
+
       const cleanup = () => {
         if (settled) {
           return
         }
 
         settled = true
+        this.pendingWaits.delete(cancelPendingWait)
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
         this.subscriptionClient.off('message', onMessage)
@@ -400,6 +407,8 @@ export class RedisCoordinator implements Coordinator {
         cleanup()
         reject(new DOMException('The operation was aborted', 'AbortError'))
       }
+
+      this.pendingWaits.add(cancelPendingWait)
 
       const onMessage = (receivedChannel: string) => {
         if (receivedChannel !== channel) {
@@ -451,6 +460,11 @@ export class RedisCoordinator implements Coordinator {
     }
 
     this.closed = true
+
+    // Waiters that are still parked must settle: the coordinator is gone.
+    for (const cancel of [...this.pendingWaits]) {
+      cancel()
+    }
 
     this.client.off('error', this.handleCommandError)
     this.client.off('ready', this.handleCommandReady)

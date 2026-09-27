@@ -45,7 +45,10 @@ export type CrossflightEvent =
   | { type: 'renewal_failed'; key: string; error: unknown }
 
 export interface WrapOptions {
+  /** How long the value stays cached. Does not affect the coordination lease. */
   ttl?: number
+  /** Lease TTL for this call; defaults to `defaultTtlMs`. */
+  leaseTtlMs?: number
   signal?: AbortSignal
   timeoutMs?: number
   failureMode?: CoordinationFailureMode

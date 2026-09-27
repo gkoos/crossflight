@@ -125,13 +125,15 @@ All options passed to `createCrossflight()`:
 | `coordinator` | `Coordinator` | required | Distributed coordination backend |
 | `failureMode` | `'fail-closed' \| 'fail-open'` | `'fail-closed'` | Fall back to running the loader when a coordination call fails (see [fail-open](#fail-open)) |
 | `defaultTimeoutMs` | `number` | none | Per-call timeout in ms |
-| `defaultTtlMs` | `number` | `30000` | Default lease TTL when not specified per call |
+| `defaultTtlMs` | `number` | `30000` | Default lease TTL when a call does not pass `leaseTtlMs` (independent of the cache `ttl`) |
 | `maxRetryAttempts` | `number` | `64` | Distributed retry limit before throwing `CoordinationTimeoutError` |
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
 
-Per-call overrides in `wrap()`: `ttl`, `timeoutMs`, `failureMode`, `signal`.
+Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
+
+The cache lifetime and the lease lifetime are separate: `ttl` controls only how long the value is cached, while the coordination lease uses `leaseTtlMs` when a call passes it, otherwise `defaultTtlMs`. A short cache lifetime therefore cannot expire the lease mid-load, and a long one cannot keep a crashed owner's lease alive. Lease TTLs are floored at 50 ms - twice the minimum renewal interval - so a lease always outlives at least one renewal.
 
 The loader receives the shared flight's `AbortSignal`. Pass it to anything that can be cancelled - a `fetch`, a driver query - so the work stops when the flight does. A loader that ignores it still works; the flight simply stops waiting for it (see [Cancellation](#cancellation)).
 
@@ -202,7 +204,7 @@ When periodic lease renewal fails during owner execution, Crossflight follows a 
 This is the only policy. A best-effort alternative — swallowing transient renewal errors and continuing the loader — was considered and rejected: without a coordinator-specific contract there is no reliable way to distinguish a transient blip from a permanent failure, and if the lease has already expired on the coordinator side, the loader is running without ownership regardless. The fail-fast policy makes failure visible and deterministic.
 
 To reduce unnecessary aborts under short-lived coordinator disruptions, tune two knobs:
-- **`defaultTtlMs`** (or per-call `ttl`): increase the lease TTL so the lease survives longer before expiring, giving the coordinator more time to recover before a renewal failure forces an abort.
+- **`defaultTtlMs`** (or per-call `leaseTtlMs`): increase the lease TTL so the lease survives longer before expiring, giving the coordinator more time to recover before a renewal failure forces an abort.
 - **`commandTimeoutMs`** on the Redis coordinator: a short command timeout causes renewals to throw quickly on a blip, triggering an abort. Raising it allows the renewal to wait longer for a slow Redis before giving up.
 
 ## Cancellation
