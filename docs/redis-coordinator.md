@@ -35,11 +35,13 @@ Each cache key is represented by two Redis primitives:
 The default key layout is:
 
 ```text
-crossflight:flight:<sha256(key)>
-crossflight:change:<sha256(key)>
+crossflight:{<sha256(key)>}:flight
+crossflight:{<sha256(key)>}:change
 ```
 
-This keeps the coordination keys namespaced and avoids collisions between different applications or cache namespaces.
+The `{...}` part is a Redis hash tag: because the tag is the hash of the logical key, every key derived from one logical key hashes to the same cluster slot, while different keys still spread across all slots. The change channel carries the tag too, for consistency - a Pub/Sub channel is not a stored key and no slot routes it, cluster Pub/Sub reaches every node on its own.
+
+The namespace keeps the coordination keys namespaced and avoids collisions between different applications or cache namespaces.
 
 ## Lease lifecycle
 
@@ -103,8 +105,8 @@ const coordinator = redisCoordinator(redis, {
 This produces keys such as:
 
 ```text
-my-app:flight:<hash>
-my-app:change:<hash>
+my-app:{<hash>}:flight
+my-app:{<hash>}:change
 ```
 
 ### `hashKey`
@@ -126,6 +128,36 @@ const coordinator = redisCoordinator(redis, {
   commandTimeoutMs: 500,
 })
 ```
+
+## Redis Cluster
+
+The coordinator runs against a cluster client unchanged. Pass an `ioredis` `Cluster` where you would pass a `Redis`: it only issues single-key commands and Pub/Sub, and the client routes both on its own.
+
+```ts
+import { Cluster } from 'ioredis'
+import { createCrossflight } from 'crossflight'
+import { redisCoordinator } from 'crossflight/coordinators/redis'
+
+const cluster = new Cluster([
+  { host: 'redis-1', port: 6379 },
+  { host: 'redis-2', port: 6379 },
+  { host: 'redis-3', port: 6379 },
+])
+
+const crossflight = createCrossflight({
+  cache: existingCacheAdapter,
+  coordinator: redisCoordinator(cluster),
+})
+```
+
+What matters on a cluster:
+
+- the tag keeps every key derived from one logical key in a single slot, so a future multi-key command or Lua script stays valid on a cluster and cluster tooling sees one shard per key
+- Pub/Sub needs no slot affinity: it is cluster-wide, so a waiter on any node sees the owner's change notification
+- the coordinator duplicates the client for its Pub/Sub connection, so a cluster client has to support `duplicate()` - `ioredis` does - and the client you pass stays caller-owned
+- `namespace` and `hashKey` behave exactly as on a single node: processes only have to agree on those options and that they run the same Crossflight version
+
+`npm run test:integration:cluster` runs the shared coordinator contract against a live cluster (the same spec the single-node coordinator and the in-memory mocks pass), plus cluster-specific checks for the tagged layout and cross-node ownership and wake-ups.
 
 ## Close semantics
 

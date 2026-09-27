@@ -177,7 +177,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     await firstLease!.renew()
     const staleKey = createHash('sha256').update('redis:stale:revive:key').digest('hex')
-    const currentOwner = await client.get(`crossflight:flight:${staleKey}`)
+    const currentOwner = await client.get(`crossflight:{${staleKey}}:flight`)
     expect(currentOwner).not.toBeNull()
     expect(currentOwner).not.toBe(firstLease!.key)
 
@@ -193,7 +193,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const otherCoordinator = redisCoordinator(otherClient)
 
     const key = 'redis:waiter:notification:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
 
     const waiter = coordinator.waitForChange(key, { timeoutMs: 500 })
     await new Promise(resolve => setTimeout(resolve, 25))
@@ -266,7 +266,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
 
     await firstLease?.complete()
     const staleKey = createHash('sha256').update('redis:stale:key').digest('hex')
-    const ownerValueAfterStaleComplete = await client.get(`crossflight:flight:${staleKey}`)
+    const ownerValueAfterStaleComplete = await client.get(`crossflight:{${staleKey}}:flight`)
     expect(ownerValueAfterStaleComplete).not.toBeNull()
 
     await secondLease?.complete()
@@ -300,9 +300,9 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const lease = await coordinator.acquire('redis:namespace:key', { ttlMs: 500 })
     expect(lease).not.toBeNull()
 
-    const matchingKeys = await client.keys('demo-ns:flight:*')
+    const matchingKeys = await client.keys('demo-ns:*:flight')
     expect(matchingKeys).toHaveLength(1)
-    expect(matchingKeys[0]).toBe('demo-ns:flight:hashed:redis:namespace:key')
+    expect(matchingKeys[0]).toBe('demo-ns:{hashed:redis:namespace:key}:flight')
 
     await lease?.complete()
     await coordinator.close()
@@ -827,7 +827,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const subscriptionClient = internals.subscriptionClient
     const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:late-success:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
 
     subscriptionClient.subscribe = async () => {
@@ -855,7 +855,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const subscriptionClient = internals.subscriptionClient
     const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:late-success-shared:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
     let slowSubscribe = true
 
@@ -897,7 +897,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const subscriptionClient = internals.subscriptionClient
     const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:pending-claim:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
     let subscribeCalls = 0
 
@@ -935,7 +935,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const subscriptionClient = internals.subscriptionClient
     const originalSubscribe = subscriptionClient.subscribe.bind(subscriptionClient)
     const key = 'redis:subscribe:command-timeout:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
 
     subscriptionClient.subscribe = async () => {
@@ -966,7 +966,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
     const key = 'redis:subscribe:shared-claim:key'
-    const channel = `crossflight:change:${createHash('sha256').update(key).digest('hex')}`
+    const channel = `crossflight:{${createHash('sha256').update(key).digest('hex')}}:change`
     const unsubscribeSpy = vi.spyOn(subscriptionClient, 'unsubscribe')
 
     const first = coordinator.waitForChange(key, { timeoutMs: 30 })
@@ -1029,7 +1029,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const internals = coordinator as unknown as RedisCoordinatorTestInternals
     const subscriptionClient = internals.subscriptionClient
     const key = 'redis:wait:unsubscribe-failure:key'
-    const channel = 'crossflight:change:' + createHash('sha256').update(key).digest('hex')
+    const channel = 'crossflight:{' + createHash('sha256').update(key).digest('hex') + '}:change'
     const unsubscribeSpy = vi
       .spyOn(subscriptionClient, 'unsubscribe')
       .mockRejectedValue(new Error('unsubscribe failed'))
@@ -1188,7 +1188,7 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     const key = 'redis:multi-process:key'
     const flightKey = createHash('sha256').update(key).digest('hex')
 
-    await client.del(`crossflight:flight:${flightKey}`)
+    await client.del(`crossflight:{${flightKey}}:flight`)
     await client.del(`crossflight:counter:${key}`)
 
     const first = runNodeProcess(key)
@@ -1206,8 +1206,36 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     expect(secondOutput.result.value).toBe('computed')
     expect([firstOutput.result.count, secondOutput.result.count]).toEqual([1, 1])
 
-    await client.del(`crossflight:flight:${flightKey}`)
+    await client.del(`crossflight:{${flightKey}}:flight`)
     await client.del(`crossflight:counter:${key}`)
     await client.quit()
   })
+
+  it('duplicates a cluster client for its own Pub/Sub connection', async () => {
+    const subscriber = {
+      status: 'ready',
+      on: vi.fn(),
+      off: vi.fn(),
+      unsubscribe: vi.fn(() => Promise.resolve(1)),
+      quit: vi.fn(() => Promise.resolve('OK')),
+    }
+    const duplicate = vi.fn(() => subscriber)
+    const cluster = {
+      status: 'ready',
+      nodes: () => [],
+      duplicate,
+      on: vi.fn(),
+      off: vi.fn(),
+    }
+
+    const coordinator = redisCoordinator(cluster as unknown as IORedis)
+    await coordinator.close()
+
+    // A cluster client cannot be rebuilt from `options` the way a single-node
+    // one can: it is reused through duplicate() so the subscriber starts from
+    // the same nodes.
+    expect(duplicate).toHaveBeenCalledTimes(1)
+    expect(subscriber.quit).toHaveBeenCalledTimes(1)
+  })
+
 })
