@@ -29,1159 +29,1330 @@ class MemoryCache {
 }
 
 describe('crossflight core', () => {
-  it('coalesces concurrent same-process misses into a single loader run', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
+  describe('coalescing and cache hits', () => {
+    it('coalesces concurrent same-process misses into a single loader run', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    let loadRuns = 0
+      let loadRuns = 0
 
-    const loader = async () => {
-      loadRuns += 1
-      await new Promise(resolve => setTimeout(resolve, 25))
-      return 'computed-value'
-    }
+      const loader = async () => {
+        loadRuns += 1
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        return 'computed-value'
+      }
 
-    const results = await Promise.all([
-      crossflight.wrap('user:123', loader),
-      crossflight.wrap('user:123', loader),
-    ])
+      const results = await Promise.all([
+        crossflight.wrap('user:123', loader),
+        crossflight.wrap('user:123', loader),
+      ])
 
-    expect(results).toEqual(['computed-value', 'computed-value'])
-    expect(loadRuns).toBe(1)
-    await crossflight.close()
-  })
-
-  it('returns the cached value without invoking the loader again', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    await cache.set('cached:1', 'cached-value')
-
-    const result = await crossflight.wrap('cached:1', async () => 'should-not-run')
-
-    expect(result).toBe('cached-value')
-    await crossflight.close()
-  })
-
-  it('extends the in-memory lease ttl when it is renewed', async () => {
-    const coordinator = new InMemoryCoordinator()
-    const lease = await coordinator.acquire('lease:ttl', { ttlMs: 90 })
-
-    expect(lease).not.toBeNull()
-
-    await new Promise(resolve => setTimeout(resolve, 50))
-    expect(await lease!.renew()).toBe(true)
-
-    await new Promise(resolve => setTimeout(resolve, 40))
-    expect(await lease!.renew()).toBe(true)
-
-    await coordinator.close()
-  })
-
-  it('renews ownership periodically while a long-running loader is active', async () => {
-    const cache = new MemoryCache()
-    let renewCalls = 0
-
-    const coordinator = {
-      async acquire(key: string) {
-        return {
-          key,
-          async renew() {
-            renewCalls += 1
-            return true
-          },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    await expect(
-      crossflight.wrap('renew:periodic:key', async () => {
-        await new Promise(resolve => setTimeout(resolve, 120))
-        return 'value'
-      }, { leaseTtlMs: 40 })
-    ).resolves.toBe('value')
-
-    expect(renewCalls).toBeGreaterThanOrEqual(2)
-    await crossflight.close()
-  })
-
-  it('keeps the lease TTL independent of the cache ttl', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const acquireSpy = vi.spyOn(coordinator, 'acquire')
-    const setSpy = vi.spyOn(cache, 'set')
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    await crossflight.wrap('lease:independent', async () => 'value', { ttl: 5 })
-
-    // The cache keeps the short ttl; the lease uses the lease TTL, so a short
-    // cache lifetime can no longer expire the lease before its first renewal.
-    expect(setSpy).toHaveBeenCalledWith('lease:independent', 'value', { ttl: 5 })
-    expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(30_000)
-
-    await crossflight.close()
-  })
-
-  it('honours a per-call leaseTtlMs and floors it above the renewal interval', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const acquireSpy = vi.spyOn(coordinator, 'acquire')
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    await crossflight.wrap('lease:explicit', async () => 'value', { leaseTtlMs: 2000 })
-    await crossflight.wrap('lease:floored', async () => 'value', { leaseTtlMs: 5 })
-
-    expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(2000)
-    expect(acquireSpy.mock.calls[1]?.[1]?.ttlMs).toBe(50)
-
-    await crossflight.close()
-  })
-
-  it('attempts lease acquisition again after waking up to a cache miss', async () => {
-    const cache = new MemoryCache()
-    let acquireCalls = 0
-    let waitCalls = 0
-
-    const coordinator = {
-      async acquire(key: string) {
-        acquireCalls += 1
-        if (acquireCalls === 1) {
-          return null
-        }
-
-        return {
-          key,
-          async renew() { return true },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {
-        waitCalls += 1
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator, maxRetryAttempts: 2 })
-
-    await expect(
-      crossflight.wrap('waiter:reacquire:key', async () => 'owned-after-reacquire')
-    ).resolves.toBe('owned-after-reacquire')
-
-    expect(waitCalls).toBe(1)
-    expect(acquireCalls).toBe(2)
-    await crossflight.close()
-  })
-
-  it('aborts an in-memory wait when its signal is cancelled', async () => {
-    const coordinator = new InMemoryCoordinator()
-    const controller = new AbortController()
-
-    const wait = coordinator.waitForChange('wait:abort', {
-      signal: controller.signal,
-      timeoutMs: 500,
+      expect(results).toEqual(['computed-value', 'computed-value'])
+      expect(loadRuns).toBe(1)
+      await crossflight.close()
     })
+    it('returns the cached value without invoking the loader again', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    controller.abort()
+      await cache.set('cached:1', 'cached-value')
 
-    await expect(wait).rejects.toThrow(/aborted|AbortError|aborted/i)
-
-    await coordinator.close()
-  })
-
-  it('rejects stale lease operations against a newer owner', async () => {
-    const coordinator = new InMemoryCoordinator()
-
-    const firstLease = await coordinator.acquire('stale:lease', { ttlMs: 40 })
-    expect(firstLease).not.toBeNull()
-
-    await new Promise(resolve => setTimeout(resolve, 60))
-
-    const secondLease = await coordinator.acquire('stale:lease', { ttlMs: 200 })
-    expect(secondLease).not.toBeNull()
-
-    await firstLease!.complete()
-    expect(await secondLease!.renew()).toBe(true)
-
-    const current = coordinator.owners.get('stale:lease')
-    expect(current).toBeDefined()
-    expect(current?.expiresAt).toBeGreaterThan(Date.now())
-
-    await secondLease!.complete()
-    await coordinator.close()
-  })
-
-  it('does not cache a value when the loader throws', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    await expect(
-      crossflight.wrap('load:fail', async () => {
-        throw new Error('boom')
-      })
-    ).rejects.toThrow('boom')
-
-    expect(await cache.get('load:fail')).toEqual({ hit: false })
-    await crossflight.close()
-  })
-
-  it('abandons ownership if cache.set fails before completion', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const originalSet = cache.set.bind(cache)
-    cache.set = async () => {
-      throw new Error('cache write failed')
-    }
-
-    await expect(
-      crossflight.wrap('write:fail', async () => 'value')
-    ).rejects.toThrow('cache write failed')
-
-    const current = coordinator.owners.get('write:fail')
-    expect(current).toBeUndefined()
-
-    cache.set = originalSet
-    await crossflight.close()
-  })
-
-  it('eventually resolves when a distributed owner takes longer than the retry window', async () => {
-    const cache = new MemoryCache()
-    let ownerCreated = false
-    let ownerDone = false
-
-    const coordinator = {
-      async acquire(key: string) {
-        if (key !== 'slow:distributed:key') {
-          return null
-        }
-
-        if (ownerCreated) {
-          return null
-        }
-
-        ownerCreated = true
-        return {
-          key,
-          async renew() {
-            return true
-          },
-          async complete() {
-            ownerDone = true
-            return undefined
-          },
-          async abandon() {
-            return undefined
-          },
-        }
-      },
-      async waitForChange() {
-        await new Promise(resolve => setTimeout(resolve, 50))
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const winner = crossflight.wrap('slow:distributed:key', async () => {
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      await cache.set('slow:distributed:key', 'value')
-      ownerDone = true
-      return 'value'
-    })
-
-    const loser = crossflight.wrap('slow:distributed:key', async () => 'should-not-run')
-
-    await expect(Promise.race([
-      Promise.all([winner, loser]),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timed out waiting for distributed load')), 5000)),
-    ])).resolves.toEqual(['value', 'value'])
-
-    expect(ownerDone).toBe(true)
-    await crossflight.close()
-  })
-
-  it('fails closed when coordination is unavailable', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() {
-        throw new Error('coordinator unavailable')
-      },
-      async waitForChange() {
-        throw new Error('coordinator unavailable')
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-closed',
-    })
-
-    await expect(
-      crossflight.wrap('coordination:down', async () => 'fallback')
-    ).rejects.toThrow('coordinator unavailable')
-
-    await crossflight.close()
-  })
-
-  it('fails open when coordination is unavailable and falls back to the loader', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() {
-        throw new Error('coordinator unavailable')
-      },
-      async waitForChange() {
-        throw new Error('coordinator unavailable')
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-    })
-
-    await expect(
-      crossflight.wrap('coordination:recovery', async () => 'fallback-value')
-    ).resolves.toBe('fallback-value')
-
-    await crossflight.close()
-  })
-
-  it('enforces a per-call timeout override', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      defaultTimeoutMs: 50,
-    })
-
-    const err = await crossflight
-      .wrap(
-        'timeout:override',
-        async () => {
-          await new Promise(resolve => setTimeout(resolve, 200))
-          return 'too-late'
-        },
-        { timeoutMs: 20 }
+      const result = await crossflight.wrap(
+        'cached:1',
+        async () => 'should-not-run'
       )
-      .catch(e => e)
 
-    expect(err).toBeInstanceOf(CoordinationTimeoutError)
-    expect((err as CoordinationTimeoutError).key).toBe('timeout:override')
-
-    await crossflight.close()
-  })
-
-  it('aborts in-flight work when close is called', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const pending = crossflight.wrap('close:abort', async () => {
-      await new Promise(resolve => setTimeout(resolve, 200))
-      return 'done'
+      expect(result).toBe('cached-value')
+      await crossflight.close()
     })
-
-    await crossflight.close()
-
-    await expect(pending).rejects.toThrow(/aborted|close|timeout/i)
   })
 
-  it('throws CoordinationClosedError when close() is called mid-flight', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
+  describe('lease lifecycle', () => {
+    it('extends the in-memory lease ttl when it is renewed', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const lease = await coordinator.acquire('lease:ttl', { ttlMs: 90 })
 
-    const pending = crossflight.wrap('close:error:type', async () => {
-      await new Promise(resolve => setTimeout(resolve, 200))
-      return 'done'
+      expect(lease).not.toBeNull()
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(await lease!.renew()).toBe(true)
+
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      expect(await lease!.renew()).toBe(true)
+
+      await coordinator.close()
     })
+    it('renews ownership periodically while a long-running loader is active', async () => {
+      const cache = new MemoryCache()
+      let renewCalls = 0
 
-    await crossflight.close()
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
 
-    await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
-    await expect(pending).rejects.toBeInstanceOf(CoordinationError)
-  })
+      const crossflight = createCrossflight({ cache, coordinator })
 
-  it('serves nothing after close, not even a value that is already cached', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
+      await expect(
+        crossflight.wrap(
+          'renew:periodic:key',
+          async () => {
+            await new Promise((resolve) => setTimeout(resolve, 120))
+            return 'value'
+          },
+          { leaseTtlMs: 40 }
+        )
+      ).resolves.toBe('value')
 
-    await cache.set('closed:hit', 'cached-value')
-    await crossflight.close()
+      expect(renewCalls).toBeGreaterThanOrEqual(2)
+      await crossflight.close()
+    })
+    it('keeps the lease TTL independent of the cache ttl', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const acquireSpy = vi.spyOn(coordinator, 'acquire')
+      const setSpy = vi.spyOn(cache, 'set')
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    let loadRuns = 0
-
-    await expect(
-      crossflight.wrap('closed:hit', async () => {
-        loadRuns += 1
-        return 'loaded'
+      await crossflight.wrap('lease:independent', async () => 'value', {
+        ttl: 5,
       })
-    ).rejects.toBeInstanceOf(CoordinationClosedError)
 
-    expect(loadRuns).toBe(0)
-  })
-
-  it('rejects work after close instead of letting a closed coordinator fall back to the loader', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() {
-        throw new CoordinationClosedError()
-      },
-      async waitForChange() {
-        throw new CoordinationClosedError()
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-    })
-
-    await crossflight.close()
-
-    let loadRuns = 0
-
-    await expect(
-      crossflight.wrap('closed:fail-open', async () => {
-        loadRuns += 1
-        return 'fallback'
+      // The cache keeps the short ttl; the lease uses the lease TTL, so a short
+      // cache lifetime can no longer expire the lease before its first renewal.
+      expect(setSpy).toHaveBeenCalledWith('lease:independent', 'value', {
+        ttl: 5,
       })
-    ).rejects.toBeInstanceOf(CoordinationClosedError)
+      expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(30_000)
 
-    expect(loadRuns).toBe(0)
+      await crossflight.close()
+    })
+    it('honours a per-call leaseTtlMs and floors it above the renewal interval', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const acquireSpy = vi.spyOn(coordinator, 'acquire')
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await crossflight.wrap('lease:explicit', async () => 'value', {
+        leaseTtlMs: 2000,
+      })
+      await crossflight.wrap('lease:floored', async () => 'value', {
+        leaseTtlMs: 5,
+      })
+
+      expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(2000)
+      expect(acquireSpy.mock.calls[1]?.[1]?.ttlMs).toBe(50)
+
+      await crossflight.close()
+    })
+    it('attempts lease acquisition again after waking up to a cache miss', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+      let waitCalls = 0
+
+      const coordinator = {
+        async acquire(key: string) {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return null
+          }
+
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {
+          waitCalls += 1
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        maxRetryAttempts: 2,
+      })
+
+      await expect(
+        crossflight.wrap(
+          'waiter:reacquire:key',
+          async () => 'owned-after-reacquire'
+        )
+      ).resolves.toBe('owned-after-reacquire')
+
+      expect(waitCalls).toBe(1)
+      expect(acquireCalls).toBe(2)
+      await crossflight.close()
+    })
+    it('rejects stale lease operations against a newer owner', async () => {
+      const coordinator = new InMemoryCoordinator()
+
+      const firstLease = await coordinator.acquire('stale:lease', { ttlMs: 40 })
+      expect(firstLease).not.toBeNull()
+
+      await new Promise((resolve) => setTimeout(resolve, 60))
+
+      const secondLease = await coordinator.acquire('stale:lease', {
+        ttlMs: 200,
+      })
+      expect(secondLease).not.toBeNull()
+
+      await firstLease!.complete()
+      expect(await secondLease!.renew()).toBe(true)
+
+      const current = coordinator.owners.get('stale:lease')
+      expect(current).toBeDefined()
+      expect(current?.expiresAt).toBeGreaterThan(Date.now())
+
+      await secondLease!.complete()
+      await coordinator.close()
+    })
   })
 
-  it('rejects new work while close() is still shutting the coordinator down', async () => {
-    const cache = new MemoryCache()
-    let releaseClose = () => {}
-    const coordinator = {
-      async acquire() {
-        return null
-      },
-      async waitForChange() {},
-      async close() {
-        await new Promise<void>(resolve => {
-          releaseClose = resolve
+  describe('loader and write failures', () => {
+    it('does not cache a value when the loader throws', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await expect(
+        crossflight.wrap('load:fail', async () => {
+          throw new Error('boom')
         })
-      },
-    }
+      ).rejects.toThrow('boom')
 
-    const crossflight = createCrossflight({ cache, coordinator })
-    const closing = crossflight.close()
+      expect(await cache.get('load:fail')).toEqual({ hit: false })
+      await crossflight.close()
+    })
+    it('abandons ownership if cache.set fails before completion', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    let loadRuns = 0
+      const originalSet = cache.set.bind(cache)
+      cache.set = async () => {
+        throw new Error('cache write failed')
+      }
 
-    await expect(
-      crossflight.wrap('closed:while-closing', async () => {
-        loadRuns += 1
-        return 'loaded'
+      await expect(
+        crossflight.wrap('write:fail', async () => 'value')
+      ).rejects.toThrow('cache write failed')
+
+      const current = coordinator.owners.get('write:fail')
+      expect(current).toBeUndefined()
+
+      cache.set = originalSet
+      await crossflight.close()
+    })
+  })
+
+  describe('distributed contention and retry', () => {
+    it('eventually resolves when a distributed owner takes longer than the retry window', async () => {
+      const cache = new MemoryCache()
+      let ownerCreated = false
+      let ownerDone = false
+
+      const coordinator = {
+        async acquire(key: string) {
+          if (key !== 'slow:distributed:key') {
+            return null
+          }
+
+          if (ownerCreated) {
+            return null
+          }
+
+          ownerCreated = true
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {
+              ownerDone = true
+              return undefined
+            },
+            async abandon() {
+              return undefined
+            },
+          }
+        },
+        async waitForChange() {
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const winner = crossflight.wrap('slow:distributed:key', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        await cache.set('slow:distributed:key', 'value')
+        ownerDone = true
+        return 'value'
       })
-    ).rejects.toBeInstanceOf(CoordinationClosedError)
 
-    expect(loadRuns).toBe(0)
+      const loser = crossflight.wrap(
+        'slow:distributed:key',
+        async () => 'should-not-run'
+      )
 
-    releaseClose()
-    await closing
-  })
+      await expect(
+        Promise.race([
+          Promise.all([winner, loser]),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error('timed out waiting for distributed load')),
+              5000
+            )
+          ),
+        ])
+      ).resolves.toEqual(['value', 'value'])
 
-  it('does not start a replacement flight for a call that arrives after close', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    let loadRuns = 0
-    const loader = async () => {
-      loadRuns += 1
-      await new Promise(resolve => setTimeout(resolve, 100))
-      return 'loaded'
-    }
-
-    const pending = crossflight.wrap('closed:replacement', loader)
-
-    // Let the flight reach the loader before it is aborted, so the assertion
-    // below really is about the second call and not about a loader that never
-    // started.
-    await new Promise(resolve => setTimeout(resolve, 10))
-    expect(loadRuns).toBe(1)
-
-    await crossflight.close()
-    await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
-
-    // The aborted flight is winding down: joining it would hand this caller
-    // somebody else's abort reason, and starting a fresh one would run the
-    // loader again for work that no lease protects any more.
-    await expect(
-      crossflight.wrap('closed:replacement', loader)
-    ).rejects.toBeInstanceOf(CoordinationClosedError)
-
-    expect(loadRuns).toBe(1)
-  })
-
-  it('closes idempotently and reports no failure for a call it rejects', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const events: unknown[] = []
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: event => events.push(event),
+      expect(ownerDone).toBe(true)
+      await crossflight.close()
     })
-
-    await crossflight.close()
-    await expect(crossflight.close()).resolves.toBeUndefined()
-
-    await expect(
-      crossflight.wrap('closed:again', async () => 'never')
-    ).rejects.toBeInstanceOf(CoordinationClosedError)
-
-    // Nothing ran, so there is nothing to report: like the whole-flight
-    // deadline guard, the rejection happens before a flight exists.
-    expect(events).toEqual([])
-  })
-
-  it('throws CoordinationTimeoutError after exhausting distributed retries', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() {
-        return null // always someone else owns it
-      },
-      async waitForChange() {
-        // return immediately so retries burn through fast
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const error = await crossflight
-      .wrap('timeout:error:type', async () => 'never')
-      .catch(e => e)
-
-    expect(error).toBeInstanceOf(CoordinationTimeoutError)
-    expect(error).toBeInstanceOf(CoordinationError)
-    expect((error as CoordinationTimeoutError).key).toBe('timeout:error:type')
-    await crossflight.close()
-  })
-
-  it('emits OwnershipLostError via onEvent when lease renewal fails', async () => {
-    const cache = new MemoryCache()
-    let leasePrepared = false
-    const failRenew = { shouldFail: false }
-
-    const coordinator = {
-      async acquire(key: string) {
-        if (leasePrepared) return null
-        leasePrepared = true
-        return {
-          key,
-          async renew() {
-            if (failRenew.shouldFail) return false
-            return true
-          },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const events: unknown[] = []
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: e => events.push(e),
-    })
-
-    failRenew.shouldFail = true
-
-    // After ownership is lost, crossflight retries. The retry sees null from acquire
-    // (leasePrepared=true) and waits via waitForChange until the cache is populated.
-    // We need to populate the cache during the retry window.
-    let retries = 0
-    coordinator.waitForChange = async () => {
-      retries += 1
-      if (retries === 1) {
-        await cache.set('ownership:lost:key', 'recovered-value')
-      }
-    }
-
-    const result = await crossflight.wrap('ownership:lost:key', async () => 'original')
-
-    const lostEvent = events.find(
-      e => (e as { type: string }).type === 'failed' &&
-           (e as { error: unknown }).error instanceof OwnershipLostError
-    ) as { error: OwnershipLostError } | undefined
-
-    expect(lostEvent).toBeDefined()
-    expect(lostEvent!.error).toBeInstanceOf(OwnershipLostError)
-    expect(lostEvent!.error).toBeInstanceOf(CoordinationError)
-    expect(lostEvent!.error.key).toBe('ownership:lost:key')
-    expect(result).toBe('recovered-value')
-
-    await crossflight.close()
-  })
-
-  it('emits a minimal event stream for cache hits and completed loads', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const events: Array<{ type: string; key: string; durationMs?: number }> = []
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: event => {
-        events.push(event as { type: string; key: string; durationMs?: number })
-      },
-    })
-
-    await crossflight.wrap('events:key', async () => 'value')
-    await crossflight.wrap('events:key', async () => 'should-not-run')
-
-    expect(events.some(event => event.type === 'miss' && event.key === 'events:key')).toBe(true)
-    expect(events.some(event => event.type === 'ownership_acquired' && event.key === 'events:key')).toBe(true)
-    expect(events.some(event => event.type === 'completed' && event.key === 'events:key')).toBe(true)
-    expect(events.some(event => event.type === 'hit' && event.key === 'events:key')).toBe(true)
-
-    await crossflight.close()
-  })
-
-  it('respects defaultTtlMs when wrap() caller does not specify ttl', async () => {
-    const cache = new MemoryCache()
-    let capturedTtlMs: number | undefined
-
-    const coordinator = {
-      async acquire(_key: string, options?: { ttlMs?: number }) {
-        capturedTtlMs = options?.ttlMs
-        return null
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      defaultTtlMs: 5_000,
-      failureMode: 'fail-open',
-    })
-
-    await crossflight.wrap('ttl:key', async () => 'value')
-    expect(capturedTtlMs).toBe(5_000)
-    await crossflight.close()
-  })
-
-  it('respects maxRetryAttempts before throwing CoordinationTimeoutError', async () => {
-    const cache = new MemoryCache()
-    let waitCalls = 0
-
-    const coordinator = {
-      async acquire() { return null },
-      async waitForChange() { waitCalls += 1 },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator, maxRetryAttempts: 3 })
-
-    await expect(
-      crossflight.wrap('retry:key', async () => 'never')
-    ).rejects.toBeInstanceOf(CoordinationTimeoutError)
-
-    expect(waitCalls).toBe(3)
-    await crossflight.close()
-  })
-
-  it('uses retryBackoff to determine wait delay per attempt', async () => {
-    const cache = new MemoryCache()
-    const capturedAttempts: number[] = []
-
-    const coordinator = {
-      async acquire() { return null },
-      async waitForChange(_key: string, options?: { timeoutMs?: number }) {
-        capturedAttempts.push(options?.timeoutMs ?? -1)
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      maxRetryAttempts: 3,
-      retryBackoff: attempt => (attempt + 1) * 10,
-    })
-
-    await expect(
-      crossflight.wrap('backoff:key', async () => 'never')
-    ).rejects.toBeInstanceOf(CoordinationTimeoutError)
-
-    expect(capturedAttempts).toEqual([10, 20, 30])
-    await crossflight.close()
-  })
-
-  it('calls onEventError when onEvent throws', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const eventErrors: unknown[] = []
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: () => {
-        throw new Error('observer boom')
-      },
-      onEventError: error => eventErrors.push(error),
-    })
-
-    await crossflight.wrap('event:error:key', async () => 'value')
-
-    expect(eventErrors.length).toBeGreaterThan(0)
-    expect((eventErrors[0] as Error).message).toBe('observer boom')
-    await crossflight.close()
-  })
-
-  it('does not throw when onEvent throws and onEventError is not set', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: () => {
-        throw new Error('observer boom')
-      },
-    })
-
-    await expect(
-      crossflight.wrap('event:silent:key', async () => 'value')
-    ).resolves.toBe('value')
-
-    await crossflight.close()
-  })
-
-  it('aborts immediately when the caller signal is already aborted before wrap()', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const controller = new AbortController()
-    controller.abort(new Error('pre-aborted'))
-
-    await expect(
-      crossflight.wrap('pre:aborted:key', async () => 'value', { signal: controller.signal })
-    ).rejects.toThrow('pre-aborted')
-
-    await crossflight.close()
-  })
-
-  it('returns cached value found during ownership recheck and releases the lease', async () => {
-    const cache = new MemoryCache()
-    let leaseAcquired = false
-    let loaderRan = false
-    let abandonCalls = 0
-    let completeCalls = 0
-
-    const coordinator = {
-      async acquire(key: string) {
-        if (leaseAcquired) return null
-        leaseAcquired = true
-        // Populate cache between acquire and loader so recheck hits
-        await cache.set(key, 'populated-between')
-        return {
-          key,
-          async renew() { return true },
-          async complete() { completeCalls += 1 },
-          async abandon() { abandonCalls += 1 },
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator })
-
-    const result = await crossflight.wrap('recheck:hit:key', async () => {
-      loaderRan = true
-      return 'from-loader'
-    })
-
-    expect(result).toBe('populated-between')
-    expect(loaderRan).toBe(false)
-    // The lease protects nothing once another owner cached the value.
-    expect(abandonCalls).toBe(1)
-    expect(completeCalls).toBe(0)
-    await crossflight.close()
-  })
-
-  it('does not retain ownership when the recheck finds a cached value', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const originalAcquire = coordinator.acquire.bind(coordinator)
-
-    // Fill the cache between acquiring ownership and the recheck.
-    coordinator.acquire = async (key: string) => {
-      const lease = await originalAcquire(key)
-      if (lease) {
-        await cache.set(key, 'populated-between')
+    it('throws CoordinationTimeoutError after exhausting distributed retries', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          return null // always someone else owns it
+        },
+        async waitForChange() {
+          // return immediately so retries burn through fast
+        },
+        async close() {},
       }
 
-      return lease
-    }
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    const crossflight = createCrossflight({ cache, coordinator })
-    let loaderRan = false
+      const error = await crossflight
+        .wrap('timeout:error:type', async () => 'never')
+        .catch((e) => e)
 
-    const result = await crossflight.wrap('recheck:release:key', async () => {
-      loaderRan = true
-      return 'from-loader'
+      expect(error).toBeInstanceOf(CoordinationTimeoutError)
+      expect(error).toBeInstanceOf(CoordinationError)
+      expect((error as CoordinationTimeoutError).key).toBe('timeout:error:type')
+      await crossflight.close()
     })
+    it('respects maxRetryAttempts before throwing CoordinationTimeoutError', async () => {
+      const cache = new MemoryCache()
+      let waitCalls = 0
 
-    expect(result).toBe('populated-between')
-    expect(loaderRan).toBe(false)
-    expect(coordinator.owners.get('recheck:release:key')).toBeUndefined()
-    await crossflight.close()
-  })
-
-  it('falls back to loader when waitForChange throws and failureMode is fail-open', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() { return null },
-      async waitForChange() { throw new Error('wait boom') },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator, failureMode: 'fail-open' })
-
-    await expect(
-      crossflight.wrap('wait:fail:open:key', async () => 'fallback')
-    ).resolves.toBe('fallback')
-
-    await crossflight.close()
-  })
-
-  it('falls back to loader when waiter wakes to a miss and still cannot acquire ownership in fail-open mode', async () => {
-    const cache = new MemoryCache()
-    let acquireCalls = 0
-
-    const coordinator = {
-      async acquire() {
-        acquireCalls += 1
-        return null
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-      maxRetryAttempts: 1,
-    })
-
-    await expect(
-      crossflight.wrap('waiter:miss:fail-open:key', async () => 'fallback-after-miss')
-    ).resolves.toBe('fallback-after-miss')
-
-    expect(acquireCalls).toBe(2)
-    await crossflight.close()
-  })
-
-  it('falls back to loader when acquire throws and failureMode is fail-open', async () => {
-    const cache = new MemoryCache()
-    const coordinator = {
-      async acquire() {
-        throw new Error('acquire boom')
-      },
-      async waitForChange() {},
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({ cache, coordinator, failureMode: 'fail-open' })
-
-    await expect(
-      crossflight.wrap('acquire:fail:open:key', async () => 'fallback-acquire')
-    ).resolves.toBe('fallback-acquire')
-
-    await crossflight.close()
-  })
-
-  it('does not enter the distributed waiter loop when the acquire itself fails in fail-open mode', async () => {
-    const cache = new MemoryCache()
-    let waitCalls = 0
-    const events: Array<{ type: string }> = []
-
-    const coordinator = {
-      async acquire() {
-        throw new Error('acquire boom')
-      },
-      async waitForChange() {
-        waitCalls += 1
-      },
-      async close() {},
-    }
-
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-      onEvent: event => events.push(event as { type: string }),
-    })
-
-    await expect(
-      crossflight.wrap('fail:open:no:waiter', async () => 'fallback')
-    ).resolves.toBe('fallback')
-
-    // A failed acquire short-circuits to the loader, so the waiter loop is not
-    // entered; only ordinary contention reaches it in fail-open mode.
-    expect(waitCalls).toBe(0)
-    expect(events.some(event => event.type === 'distributed_join')).toBe(false)
-
-    await crossflight.close()
-  })
-
-  it('joins the distributed wait instead of loading when the lease is contended in fail-open mode', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
-    const events: Array<{ type: string }> = []
-    let loadRuns = 0
-    let releaseOwner: () => void = () => {}
-    const ownerGate = new Promise<void>(resolve => {
-      releaseOwner = resolve
-    })
-    let ownerStarted: () => void = () => {}
-    const ownerStartedGate = new Promise<void>(resolve => {
-      ownerStarted = resolve
-    })
-
-    const owner = createCrossflight({ cache, coordinator })
-    const fallback = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-      onEvent: event => events.push(event as { type: string }),
-    })
-
-    const ownerResult = owner.wrap('fail:open:contended:key', async () => {
-      loadRuns += 1
-      ownerStarted()
-      await ownerGate
-      return 'owner-value'
-    })
-
-    // The loader runs only once the owner holds the lease, so this is the
-    // deterministic point at which the key is contended.
-    await ownerStartedGate
-
-    const fallbackResult = fallback.wrap('fail:open:contended:key', async () => {
-      loadRuns += 1
-      return 'fallback-value'
-    })
-
-    releaseOwner()
-
-    await expect(ownerResult).resolves.toBe('owner-value')
-    await expect(fallbackResult).resolves.toBe('owner-value')
-    expect(loadRuns).toBe(1)
-    expect(events.some(event => event.type === 'distributed_join')).toBe(true)
-    expect(events.some(event => event.type === 'hit')).toBe(true)
-
-    await owner.close()
-    await fallback.close()
-  })
-
-  it('becomes the owner in fail-open mode when a contended lease is released without a value', async () => {
-    const cache = new MemoryCache()
-    let acquireCalls = 0
-
-    const coordinator = {
-      async acquire(key: string) {
-        acquireCalls += 1
-        if (acquireCalls === 1) {
+      const coordinator = {
+        async acquire() {
           return null
-        }
+        },
+        async waitForChange() {
+          waitCalls += 1
+        },
+        async close() {},
+      }
 
-        return {
-          key,
-          async renew() {
-            return true
-          },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        maxRetryAttempts: 3,
+      })
 
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-      maxRetryAttempts: 2,
+      await expect(
+        crossflight.wrap('retry:key', async () => 'never')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(waitCalls).toBe(3)
+      await crossflight.close()
     })
+    it('uses retryBackoff to determine wait delay per attempt', async () => {
+      const cache = new MemoryCache()
+      const capturedAttempts: number[] = []
 
-    await expect(
-      crossflight.wrap('fail:open:reacquire:key', async () => 'own-value')
-    ).resolves.toBe('own-value')
-
-    expect(acquireCalls).toBe(2)
-    await crossflight.close()
-  })
-
-  it('falls back to loader when a contended re-acquire fails in fail-open mode', async () => {
-    const cache = new MemoryCache()
-    let acquireCalls = 0
-    const events: Array<{ type: string; error?: unknown }> = []
-
-    const coordinator = {
-      async acquire() {
-        acquireCalls += 1
-        if (acquireCalls === 1) {
+      const coordinator = {
+        async acquire() {
           return null
-        }
-        throw new Error('acquire boom')
-      },
-      async waitForChange() {},
-      async close() {},
-    }
+        },
+        async waitForChange(_key: string, options?: { timeoutMs?: number }) {
+          capturedAttempts.push(options?.timeoutMs ?? -1)
+        },
+        async close() {},
+      }
 
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      failureMode: 'fail-open',
-      maxRetryAttempts: 2,
-      onEvent: event => events.push(event as { type: string; error?: unknown }),
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        maxRetryAttempts: 3,
+        retryBackoff: (attempt) => (attempt + 1) * 10,
+      })
+
+      await expect(
+        crossflight.wrap('backoff:key', async () => 'never')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(capturedAttempts).toEqual([10, 20, 30])
+      await crossflight.close()
     })
-
-    await expect(
-      crossflight.wrap('fail:open:reacquire:fail', async () => 'fallback-value')
-    ).resolves.toBe('fallback-value')
-
-    expect(acquireCalls).toBe(2)
-    const failed = events.filter(event => event.type === 'failed')
-    expect(failed).toHaveLength(1)
-    expect((failed[0]!.error as Error).message).toBe('acquire boom')
-
-    await crossflight.close()
   })
 
-  it('fails with the renewal error when periodic renewal throws during owner execution', async () => {
-    const cache = new MemoryCache()
-    let renewCalls = 0
+  describe('failure mode', () => {
+    it('fails closed when coordination is unavailable', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          throw new Error('coordinator unavailable')
+        },
+        async waitForChange() {
+          throw new Error('coordinator unavailable')
+        },
+        async close() {},
+      }
 
-    const coordinator = {
-      async acquire(key: string) {
-        return {
-          key,
-          async renew() {
-            renewCalls += 1
-            if (renewCalls >= 2) {
-              throw new Error('renew failed')
-            }
-            return true
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-closed',
+      })
+
+      await expect(
+        crossflight.wrap('coordination:down', async () => 'fallback')
+      ).rejects.toThrow('coordinator unavailable')
+
+      await crossflight.close()
+    })
+    it('fails open when coordination is unavailable and falls back to the loader', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          throw new Error('coordinator unavailable')
+        },
+        async waitForChange() {
+          throw new Error('coordinator unavailable')
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+      })
+
+      await expect(
+        crossflight.wrap('coordination:recovery', async () => 'fallback-value')
+      ).resolves.toBe('fallback-value')
+
+      await crossflight.close()
+    })
+    it('falls back to loader when waitForChange throws and failureMode is fail-open', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {
+          throw new Error('wait boom')
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+      })
+
+      await expect(
+        crossflight.wrap('wait:fail:open:key', async () => 'fallback')
+      ).resolves.toBe('fallback')
+
+      await crossflight.close()
+    })
+    it('falls back to loader when waiter wakes to a miss and still cannot acquire ownership in fail-open mode', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+
+      const coordinator = {
+        async acquire() {
+          acquireCalls += 1
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        maxRetryAttempts: 1,
+      })
+
+      await expect(
+        crossflight.wrap(
+          'waiter:miss:fail-open:key',
+          async () => 'fallback-after-miss'
+        )
+      ).resolves.toBe('fallback-after-miss')
+
+      expect(acquireCalls).toBe(2)
+      await crossflight.close()
+    })
+    it('falls back to loader when acquire throws and failureMode is fail-open', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+      })
+
+      await expect(
+        crossflight.wrap(
+          'acquire:fail:open:key',
+          async () => 'fallback-acquire'
+        )
+      ).resolves.toBe('fallback-acquire')
+
+      await crossflight.close()
+    })
+    it('does not enter the distributed waiter loop when the acquire itself fails in fail-open mode', async () => {
+      const cache = new MemoryCache()
+      let waitCalls = 0
+      const events: Array<{ type: string }> = []
+
+      const coordinator = {
+        async acquire() {
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {
+          waitCalls += 1
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        onEvent: (event) => events.push(event as { type: string }),
+      })
+
+      await expect(
+        crossflight.wrap('fail:open:no:waiter', async () => 'fallback')
+      ).resolves.toBe('fallback')
+
+      // A failed acquire short-circuits to the loader, so the waiter loop is not
+      // entered; only ordinary contention reaches it in fail-open mode.
+      expect(waitCalls).toBe(0)
+      expect(events.some((event) => event.type === 'distributed_join')).toBe(
+        false
+      )
+
+      await crossflight.close()
+    })
+    it('joins the distributed wait instead of loading when the lease is contended in fail-open mode', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const events: Array<{ type: string }> = []
+      let loadRuns = 0
+      let releaseOwner: () => void = () => {}
+      const ownerGate = new Promise<void>((resolve) => {
+        releaseOwner = resolve
+      })
+      let ownerStarted: () => void = () => {}
+      const ownerStartedGate = new Promise<void>((resolve) => {
+        ownerStarted = resolve
+      })
+
+      const owner = createCrossflight({ cache, coordinator })
+      const fallback = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        onEvent: (event) => events.push(event as { type: string }),
+      })
+
+      const ownerResult = owner.wrap('fail:open:contended:key', async () => {
+        loadRuns += 1
+        ownerStarted()
+        await ownerGate
+        return 'owner-value'
+      })
+
+      // The loader runs only once the owner holds the lease, so this is the
+      // deterministic point at which the key is contended.
+      await ownerStartedGate
+
+      const fallbackResult = fallback.wrap(
+        'fail:open:contended:key',
+        async () => {
+          loadRuns += 1
+          return 'fallback-value'
+        }
+      )
+
+      releaseOwner()
+
+      await expect(ownerResult).resolves.toBe('owner-value')
+      await expect(fallbackResult).resolves.toBe('owner-value')
+      expect(loadRuns).toBe(1)
+      expect(events.some((event) => event.type === 'distributed_join')).toBe(
+        true
+      )
+      expect(events.some((event) => event.type === 'hit')).toBe(true)
+
+      await owner.close()
+      await fallback.close()
+    })
+    it('becomes the owner in fail-open mode when a contended lease is released without a value', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+
+      const coordinator = {
+        async acquire(key: string) {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return null
+          }
+
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        maxRetryAttempts: 2,
+      })
+
+      await expect(
+        crossflight.wrap('fail:open:reacquire:key', async () => 'own-value')
+      ).resolves.toBe('own-value')
+
+      expect(acquireCalls).toBe(2)
+      await crossflight.close()
+    })
+    it('falls back to loader when a contended re-acquire fails in fail-open mode', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+      const events: Array<{ type: string; error?: unknown }> = []
+
+      const coordinator = {
+        async acquire() {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return null
+          }
+          throw new Error('acquire boom')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        maxRetryAttempts: 2,
+        onEvent: (event) =>
+          events.push(event as { type: string; error?: unknown }),
+      })
+
+      await expect(
+        crossflight.wrap(
+          'fail:open:reacquire:fail',
+          async () => 'fallback-value'
+        )
+      ).resolves.toBe('fallback-value')
+
+      expect(acquireCalls).toBe(2)
+      const failed = events.filter((event) => event.type === 'failed')
+      expect(failed).toHaveLength(1)
+      expect((failed[0]!.error as Error).message).toBe('acquire boom')
+
+      await crossflight.close()
+    })
+  })
+
+  describe('timeout and cancellation', () => {
+    it('aborts an in-memory wait when its signal is cancelled', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const controller = new AbortController()
+
+      const wait = coordinator.waitForChange('wait:abort', {
+        signal: controller.signal,
+        timeoutMs: 500,
+      })
+
+      controller.abort()
+
+      await expect(wait).rejects.toThrow(/aborted|AbortError|aborted/i)
+
+      await coordinator.close()
+    })
+    it('enforces a per-call timeout override', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultTimeoutMs: 50,
+      })
+
+      const err = await crossflight
+        .wrap(
+          'timeout:override',
+          async () => {
+            await new Promise((resolve) => setTimeout(resolve, 200))
+            return 'too-late'
           },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
+          { timeoutMs: 20 }
+        )
+        .catch((e) => e)
 
-    const crossflight = createCrossflight({ cache, coordinator })
+      expect(err).toBeInstanceOf(CoordinationTimeoutError)
+      expect((err as CoordinationTimeoutError).key).toBe('timeout:override')
 
-    await expect(
-      crossflight.wrap('renew:error:key', async () => {
-        await new Promise(resolve => setTimeout(resolve, 120))
-        return 'value'
-      }, { leaseTtlMs: 40 })
-    ).rejects.toThrow('renew failed')
+      await crossflight.close()
+    })
+    it('aborts immediately when the caller signal is already aborted before wrap()', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    await crossflight.close()
+      const controller = new AbortController()
+      controller.abort(new Error('pre-aborted'))
+
+      await expect(
+        crossflight.wrap('pre:aborted:key', async () => 'value', {
+          signal: controller.signal,
+        })
+      ).rejects.toThrow('pre-aborted')
+
+      await crossflight.close()
+    })
   })
 
-  it('emits renewal_failed event when periodic renewal throws during owner execution', async () => {
-    const cache = new MemoryCache()
-    let renewCalls = 0
+  describe('ownership recheck', () => {
+    it('returns cached value found during ownership recheck and releases the lease', async () => {
+      const cache = new MemoryCache()
+      let leaseAcquired = false
+      let loaderRan = false
+      let abandonCalls = 0
+      let completeCalls = 0
 
-    const coordinator = {
-      async acquire(key: string) {
-        return {
-          key,
-          async renew() {
-            renewCalls += 1
-            if (renewCalls >= 2) {
-              throw new Error('renew blip')
-            }
-            return true
+      const coordinator = {
+        async acquire(key: string) {
+          if (leaseAcquired) return null
+          leaseAcquired = true
+          // Populate cache between acquire and loader so recheck hits
+          await cache.set(key, 'populated-between')
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {
+              completeCalls += 1
+            },
+            async abandon() {
+              abandonCalls += 1
+            },
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      const result = await crossflight.wrap('recheck:hit:key', async () => {
+        loaderRan = true
+        return 'from-loader'
+      })
+
+      expect(result).toBe('populated-between')
+      expect(loaderRan).toBe(false)
+      // The lease protects nothing once another owner cached the value.
+      expect(abandonCalls).toBe(1)
+      expect(completeCalls).toBe(0)
+      await crossflight.close()
+    })
+    it('does not retain ownership when the recheck finds a cached value', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const originalAcquire = coordinator.acquire.bind(coordinator)
+
+      // Fill the cache between acquiring ownership and the recheck.
+      coordinator.acquire = async (key: string) => {
+        const lease = await originalAcquire(key)
+        if (lease) {
+          await cache.set(key, 'populated-between')
+        }
+
+        return lease
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      let loaderRan = false
+
+      const result = await crossflight.wrap('recheck:release:key', async () => {
+        loaderRan = true
+        return 'from-loader'
+      })
+
+      expect(result).toBe('populated-between')
+      expect(loaderRan).toBe(false)
+      expect(coordinator.owners.get('recheck:release:key')).toBeUndefined()
+      await crossflight.close()
+    })
+  })
+
+  describe('renewal failure reporting', () => {
+    it('emits OwnershipLostError via onEvent when lease renewal fails', async () => {
+      const cache = new MemoryCache()
+      let leasePrepared = false
+      const failRenew = { shouldFail: false }
+
+      const coordinator = {
+        async acquire(key: string) {
+          if (leasePrepared) return null
+          leasePrepared = true
+          return {
+            key,
+            async renew() {
+              if (failRenew.shouldFail) return false
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: (e) => events.push(e),
+      })
+
+      failRenew.shouldFail = true
+
+      // After ownership is lost, crossflight retries. The retry sees null from acquire
+      // (leasePrepared=true) and waits via waitForChange until the cache is populated.
+      // We need to populate the cache during the retry window.
+      let retries = 0
+      coordinator.waitForChange = async () => {
+        retries += 1
+        if (retries === 1) {
+          await cache.set('ownership:lost:key', 'recovered-value')
+        }
+      }
+
+      const result = await crossflight.wrap(
+        'ownership:lost:key',
+        async () => 'original'
+      )
+
+      const lostEvent = events.find(
+        (e) =>
+          (e as { type: string }).type === 'failed' &&
+          (e as { error: unknown }).error instanceof OwnershipLostError
+      ) as { error: OwnershipLostError } | undefined
+
+      expect(lostEvent).toBeDefined()
+      expect(lostEvent!.error).toBeInstanceOf(OwnershipLostError)
+      expect(lostEvent!.error).toBeInstanceOf(CoordinationError)
+      expect(lostEvent!.error.key).toBe('ownership:lost:key')
+      expect(result).toBe('recovered-value')
+
+      await crossflight.close()
+    })
+    it('fails with the renewal error when periodic renewal throws during owner execution', async () => {
+      const cache = new MemoryCache()
+      let renewCalls = 0
+
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              if (renewCalls >= 2) {
+                throw new Error('renew failed')
+              }
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await expect(
+        crossflight.wrap(
+          'renew:error:key',
+          async () => {
+            await new Promise((resolve) => setTimeout(resolve, 120))
+            return 'value'
           },
-          async complete() {},
-          async abandon() {},
-        }
-      },
-      async waitForChange() {},
-      async close() {},
-    }
+          { leaseTtlMs: 40 }
+        )
+      ).rejects.toThrow('renew failed')
 
-    const events: unknown[] = []
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: e => events.push(e),
+      await crossflight.close()
     })
+    it('emits renewal_failed event when periodic renewal throws during owner execution', async () => {
+      const cache = new MemoryCache()
+      let renewCalls = 0
 
-    await expect(
-      crossflight.wrap('renew:event:key', async () => {
-        await new Promise(resolve => setTimeout(resolve, 120))
-        return 'value'
-      }, { leaseTtlMs: 40 })
-    ).rejects.toThrow('renew blip')
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              renewCalls += 1
+              if (renewCalls >= 2) {
+                throw new Error('renew blip')
+              }
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
 
-    const renewalFailedEvent = events.find(
-      e => (e as { type: string }).type === 'renewal_failed'
-    ) as { type: string; key: string; error: unknown } | undefined
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: (e) => events.push(e),
+      })
 
-    expect(renewalFailedEvent).toBeDefined()
-    expect(renewalFailedEvent!.key).toBe('renew:event:key')
-    expect((renewalFailedEvent!.error as Error).message).toBe('renew blip')
+      await expect(
+        crossflight.wrap(
+          'renew:event:key',
+          async () => {
+            await new Promise((resolve) => setTimeout(resolve, 120))
+            return 'value'
+          },
+          { leaseTtlMs: 40 }
+        )
+      ).rejects.toThrow('renew blip')
 
-    await crossflight.close()
+      const renewalFailedEvent = events.find(
+        (e) => (e as { type: string }).type === 'renewal_failed'
+      ) as { type: string; key: string; error: unknown } | undefined
+
+      expect(renewalFailedEvent).toBeDefined()
+      expect(renewalFailedEvent!.key).toBe('renew:event:key')
+      expect((renewalFailedEvent!.error as Error).message).toBe('renew blip')
+
+      await crossflight.close()
+    })
   })
 
-  it('swallows errors thrown by onEventError itself', async () => {
-    const cache = new MemoryCache()
-    const coordinator = new InMemoryCoordinator()
+  describe('close', () => {
+    it('aborts in-flight work when close is called', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    const crossflight = createCrossflight({
-      cache,
-      coordinator,
-      onEvent: () => { throw new Error('observer boom') },
-      onEventError: () => { throw new Error('error handler also boom') },
+      const pending = crossflight.wrap('close:abort', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        return 'done'
+      })
+
+      await crossflight.close()
+
+      await expect(pending).rejects.toThrow(/aborted|close|timeout/i)
     })
+    it('throws CoordinationClosedError when close() is called mid-flight', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
 
-    await expect(
-      crossflight.wrap('event:error:handler:throws', async () => 'value')
-    ).resolves.toBe('value')
+      const pending = crossflight.wrap('close:error:type', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        return 'done'
+      })
 
-    await crossflight.close()
+      await crossflight.close()
+
+      await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
+      await expect(pending).rejects.toBeInstanceOf(CoordinationError)
+    })
+    it('serves nothing after close, not even a value that is already cached', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await cache.set('closed:hit', 'cached-value')
+      await crossflight.close()
+
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('closed:hit', async () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      expect(loadRuns).toBe(0)
+    })
+    it('rejects work after close instead of letting a closed coordinator fall back to the loader', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          throw new CoordinationClosedError()
+        },
+        async waitForChange() {
+          throw new CoordinationClosedError()
+        },
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+      })
+
+      await crossflight.close()
+
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('closed:fail-open', async () => {
+          loadRuns += 1
+          return 'fallback'
+        })
+      ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      expect(loadRuns).toBe(0)
+    })
+    it('rejects new work while close() is still shutting the coordinator down', async () => {
+      const cache = new MemoryCache()
+      let releaseClose = () => {}
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {},
+        async close() {
+          await new Promise<void>((resolve) => {
+            releaseClose = resolve
+          })
+        },
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      const closing = crossflight.close()
+
+      let loadRuns = 0
+
+      await expect(
+        crossflight.wrap('closed:while-closing', async () => {
+          loadRuns += 1
+          return 'loaded'
+        })
+      ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      expect(loadRuns).toBe(0)
+
+      releaseClose()
+      await closing
+    })
+    it('does not start a replacement flight for a call that arrives after close', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      let loadRuns = 0
+      const loader = async () => {
+        loadRuns += 1
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        return 'loaded'
+      }
+
+      const pending = crossflight.wrap('closed:replacement', loader)
+
+      // Let the flight reach the loader before it is aborted, so the assertion
+      // below really is about the second call and not about a loader that never
+      // started.
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(loadRuns).toBe(1)
+
+      await crossflight.close()
+      await expect(pending).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      // The aborted flight is winding down: joining it would hand this caller
+      // somebody else's abort reason, and starting a fresh one would run the
+      // loader again for work that no lease protects any more.
+      await expect(
+        crossflight.wrap('closed:replacement', loader)
+      ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      expect(loadRuns).toBe(1)
+    })
+    it('closes idempotently and reports no failure for a call it rejects', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: (event) => events.push(event),
+      })
+
+      await crossflight.close()
+      await expect(crossflight.close()).resolves.toBeUndefined()
+
+      await expect(
+        crossflight.wrap('closed:again', async () => 'never')
+      ).rejects.toBeInstanceOf(CoordinationClosedError)
+
+      // Nothing ran, so there is nothing to report: like the whole-flight
+      // deadline guard, the rejection happens before a flight exists.
+      expect(events).toEqual([])
+    })
+  })
+
+  describe('events and configuration', () => {
+    it('emits a minimal event stream for cache hits and completed loads', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const events: Array<{ type: string; key: string; durationMs?: number }> =
+        []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: (event) => {
+          events.push(
+            event as { type: string; key: string; durationMs?: number }
+          )
+        },
+      })
+
+      await crossflight.wrap('events:key', async () => 'value')
+      await crossflight.wrap('events:key', async () => 'should-not-run')
+
+      expect(
+        events.some(
+          (event) => event.type === 'miss' && event.key === 'events:key'
+        )
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'ownership_acquired' && event.key === 'events:key'
+        )
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) => event.type === 'completed' && event.key === 'events:key'
+        )
+      ).toBe(true)
+      expect(
+        events.some(
+          (event) => event.type === 'hit' && event.key === 'events:key'
+        )
+      ).toBe(true)
+
+      await crossflight.close()
+    })
+    it('respects defaultTtlMs when wrap() caller does not specify ttl', async () => {
+      const cache = new MemoryCache()
+      let capturedTtlMs: number | undefined
+
+      const coordinator = {
+        async acquire(_key: string, options?: { ttlMs?: number }) {
+          capturedTtlMs = options?.ttlMs
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultTtlMs: 5_000,
+        failureMode: 'fail-open',
+      })
+
+      await crossflight.wrap('ttl:key', async () => 'value')
+      expect(capturedTtlMs).toBe(5_000)
+      await crossflight.close()
+    })
+    it('calls onEventError when onEvent throws', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+      const eventErrors: unknown[] = []
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: () => {
+          throw new Error('observer boom')
+        },
+        onEventError: (error) => eventErrors.push(error),
+      })
+
+      await crossflight.wrap('event:error:key', async () => 'value')
+
+      expect(eventErrors.length).toBeGreaterThan(0)
+      expect((eventErrors[0] as Error).message).toBe('observer boom')
+      await crossflight.close()
+    })
+    it('does not throw when onEvent throws and onEventError is not set', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: () => {
+          throw new Error('observer boom')
+        },
+      })
+
+      await expect(
+        crossflight.wrap('event:silent:key', async () => 'value')
+      ).resolves.toBe('value')
+
+      await crossflight.close()
+    })
+    it('swallows errors thrown by onEventError itself', async () => {
+      const cache = new MemoryCache()
+      const coordinator = new InMemoryCoordinator()
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: () => {
+          throw new Error('observer boom')
+        },
+        onEventError: () => {
+          throw new Error('error handler also boom')
+        },
+      })
+
+      await expect(
+        crossflight.wrap('event:error:handler:throws', async () => 'value')
+      ).resolves.toBe('value')
+
+      await crossflight.close()
+    })
+  })
+
+  describe('process liveness', () => {
+    const runLifecycleChild = (script: string) =>
+      spawnSync(process.execPath, ['--import=tsx', '--eval', script], {
+        cwd: process.cwd(),
+        timeout: 10_000,
+        encoding: 'utf8',
+      })
+
+    it('does not keep an exiting process alive for a pending renewal timer', () => {
+      const script = `
+      import { createCrossflight } from './src/index.ts'
+
+      const coordinator = {
+        async acquire(key) {
+          return {
+            key,
+            async renew() { return true },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const cache = {
+        async get() { return { hit: false } },
+        async set() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      void crossflight.wrap('lifecycle:renewal:key', () => new Promise(() => {}), { ttl: 3000 })
+    `
+
+      const result = runLifecycleChild(script)
+
+      expect(result.signal).toBeNull()
+      expect(result.status).toBe(0)
+    })
+    it('does not keep an exiting process alive for a pending per-call timeout', () => {
+      const script = `
+      import { createCrossflight } from './src/index.ts'
+
+      const coordinator = {
+        async acquire() { throw new Error('coordinator down') },
+        async waitForChange() {},
+        async close() {},
+      }
+
+      const cache = {
+        async get() { return { hit: false } },
+        async set() {},
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+      void crossflight.wrap('lifecycle:timeout:key', () => new Promise(() => {}), { failureMode: 'fail-open', timeoutMs: 60000 })
+    `
+
+      const result = runLifecycleChild(script)
+
+      expect(result.signal).toBeNull()
+      expect(result.status).toBe(0)
+    })
   })
 
   describe('operational events', () => {
@@ -1196,7 +1367,7 @@ describe('crossflight core', () => {
 
     const findEvent = (events: unknown[], type: string): ObservedEvent => {
       const found = events.find(
-        event => (event as ObservedEvent).type === type
+        (event) => (event as ObservedEvent).type === type
       ) as ObservedEvent | undefined
 
       if (!found) {
@@ -1226,7 +1397,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1256,7 +1427,7 @@ describe('crossflight core', () => {
         cache,
         coordinator,
         failureMode: 'fail-open',
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1284,7 +1455,7 @@ describe('crossflight core', () => {
         cache,
         coordinator,
         maxRetryAttempts: 3,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1305,7 +1476,7 @@ describe('crossflight core', () => {
           return null
         },
         async waitForChange(key: string) {
-          await new Promise(resolve => setTimeout(resolve, 30))
+          await new Promise((resolve) => setTimeout(resolve, 30))
           await cache.set(key, 'other-owner-value')
         },
         async close() {},
@@ -1314,7 +1485,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1347,7 +1518,7 @@ describe('crossflight core', () => {
           }
         },
         async waitForChange() {
-          await new Promise(resolve => setTimeout(resolve, 30))
+          await new Promise((resolve) => setTimeout(resolve, 30))
         },
         async close() {},
       }
@@ -1355,7 +1526,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1367,7 +1538,7 @@ describe('crossflight core', () => {
 
       const completed = findEvent(events, 'completed')
       const hits = events.filter(
-        event => (event as ObservedEvent).type === 'hit'
+        (event) => (event as ObservedEvent).type === 'hit'
       ) as ObservedEvent[]
 
       expect(completed.waitedMs).toBeGreaterThanOrEqual(25)
@@ -1402,14 +1573,14 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
         crossflight.wrap('events:ownership-lost', async () => {
           loadCalls += 1
           if (loadCalls === 1) {
-            await new Promise(resolve => setTimeout(resolve, 60))
+            await new Promise((resolve) => setTimeout(resolve, 60))
           }
 
           return `value-${loadCalls}`
@@ -1429,7 +1600,7 @@ describe('crossflight core', () => {
         async acquire(key: string) {
           // A slow acquire that loses the race: the value lands while the lease
           // is being taken, so this caller never waited on another owner.
-          await new Promise(resolve => setTimeout(resolve, 30))
+          await new Promise((resolve) => setTimeout(resolve, 30))
           await cache.set(key, 'other-owner-value')
 
           return {
@@ -1449,7 +1620,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
@@ -1515,7 +1686,7 @@ describe('crossflight core', () => {
         cache,
         coordinator: new InMemoryCoordinator(),
         cacheUndefined: true,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
       let loadRuns = 0
       const loader = () => {
@@ -1535,7 +1706,7 @@ describe('crossflight core', () => {
         __crossflight_envelope__: 1,
       })
       expect(
-        events.some(event => (event as { type: string }).type === 'hit')
+        events.some((event) => (event as { type: string }).type === 'hit')
       ).toBe(true)
 
       await crossflight.close()
@@ -1572,9 +1743,9 @@ describe('crossflight core', () => {
       })
       const value = { token: 'server-key' }
 
-      await expect(crossflight.wrap('undefined:real', () => value)).resolves.toBe(
-        value
-      )
+      await expect(
+        crossflight.wrap('undefined:real', () => value)
+      ).resolves.toBe(value)
       await expect(
         crossflight.wrap('undefined:real', () => 'other')
       ).resolves.toBe(value)
@@ -1761,7 +1932,7 @@ describe('crossflight core', () => {
           return { hit: true as const, value }
         },
         async set<T>(key: string, value: T) {
-          await new Promise(resolve => setTimeout(resolve, setDelayMs))
+          await new Promise((resolve) => setTimeout(resolve, setDelayMs))
           values.set(key, value)
         },
       }
@@ -1781,7 +1952,7 @@ describe('crossflight core', () => {
         cache,
         coordinator: new InMemoryCoordinator(),
         defaultFlightDeadlineMs: 500,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       const results = await Promise.all([
@@ -1791,7 +1962,7 @@ describe('crossflight core', () => {
 
       expect(results).toEqual(['value', 'value'])
       expect(
-        events.some(event => (event as { type: string }).type === 'failed')
+        events.some((event) => (event as { type: string }).type === 'failed')
       ).toBe(false)
 
       await crossflight.close()
@@ -1805,13 +1976,13 @@ describe('crossflight core', () => {
         cache,
         coordinator: new InMemoryCoordinator(),
         defaultFlightDeadlineMs: 30,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       const startedAt = Date.now()
 
       await expect(
-        crossflight.wrap('deadline:stall', signal => {
+        crossflight.wrap('deadline:stall', (signal) => {
           loaderSignal = signal
           return stall(signal)
         })
@@ -1821,7 +1992,7 @@ describe('crossflight core', () => {
       expect(loaderSignal?.aborted).toBe(true)
       expect(
         events.some(
-          event =>
+          (event) =>
             (event as { type: string }).type === 'failed' &&
             (event as { error?: unknown }).error instanceof
               CoordinationTimeoutError
@@ -1840,7 +2011,7 @@ describe('crossflight core', () => {
       })
 
       const first = crossflight.wrap('deadline:shared', stall)
-      await new Promise(resolve => setTimeout(resolve, 20))
+      await new Promise((resolve) => setTimeout(resolve, 20))
 
       const joinedAt = Date.now()
       const second = crossflight.wrap('deadline:shared', stall, {
@@ -1863,7 +2034,7 @@ describe('crossflight core', () => {
         cache,
         coordinator: new InMemoryCoordinator(),
         defaultFlightDeadlineMs: 20,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       const first = crossflight.wrap('deadline:late', async () => {
@@ -1873,7 +2044,7 @@ describe('crossflight core', () => {
 
       // The first caller is inside the slow cache write when the deadline
       // passes, so its flight is still registered.
-      await new Promise(resolve => setTimeout(resolve, 40))
+      await new Promise((resolve) => setTimeout(resolve, 40))
 
       const late = crossflight.wrap('deadline:late', async () => {
         loadRuns += 1
@@ -1886,7 +2057,7 @@ describe('crossflight core', () => {
       // The late caller is rejected on the spot: it neither runs the loader nor
       // starts a flight of its own, which would emit a second miss.
       expect(
-        events.filter(event => (event as { type: string }).type === 'miss')
+        events.filter((event) => (event as { type: string }).type === 'miss')
       ).toHaveLength(1)
 
       await crossflight.close()
@@ -1903,7 +2074,7 @@ describe('crossflight core', () => {
       })
 
       await expect(
-        crossflight.wrap('deadline:fail-open', signal => {
+        crossflight.wrap('deadline:fail-open', (signal) => {
           loadRuns += 1
           return stall(signal)
         })
@@ -1917,7 +2088,7 @@ describe('crossflight core', () => {
     it('bounds a stalled cache read with the deadline', async () => {
       const cache = {
         async get<T>(): Promise<{ hit: true; value: T }> {
-          await new Promise(resolve => setTimeout(resolve, 400))
+          await new Promise((resolve) => setTimeout(resolve, 400))
           return { hit: true, value: 'late' as unknown as T }
         },
         async set() {},
@@ -1975,7 +2146,7 @@ describe('crossflight core', () => {
       const coordinator = {
         async acquire() {
           acquireCalls += 1
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise((resolve) => setTimeout(resolve, 100))
           throw new Error('coordinator down')
         },
         async waitForChange() {},
@@ -2030,7 +2201,7 @@ describe('crossflight core', () => {
       let loadRuns = 0
       const coordinator = {
         async acquire() {
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise((resolve) => setTimeout(resolve, 100))
           throw new Error('coordinator down')
         },
         async waitForChange() {},
@@ -2063,7 +2234,7 @@ describe('crossflight core', () => {
       const abandoned: string[] = []
       const coordinator = {
         async acquire(key: string) {
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise((resolve) => setTimeout(resolve, 100))
 
           return {
             key,
@@ -2095,7 +2266,7 @@ describe('crossflight core', () => {
 
       // The lease still arrives after the flight gave up waiting, so it is
       // released instead of leaking until its TTL.
-      await new Promise(resolve => setTimeout(resolve, 120))
+      await new Promise((resolve) => setTimeout(resolve, 120))
       expect(abandoned).toEqual(['deadline:slow-acquire'])
 
       await crossflight.close()
@@ -2128,7 +2299,7 @@ describe('crossflight core', () => {
       const startedAt = Date.now()
 
       await expect(
-        crossflight.wrap('deadline:hung-abandon', signal => stall(signal))
+        crossflight.wrap('deadline:hung-abandon', (signal) => stall(signal))
       ).rejects.toBeInstanceOf(CoordinationTimeoutError)
 
       expect(Date.now() - startedAt).toBeLessThan(120)
@@ -2167,7 +2338,7 @@ describe('crossflight core', () => {
         crossflight.wrap(
           'deadline:hung-renewal',
           async () => {
-            await new Promise(resolve => setTimeout(resolve, 120))
+            await new Promise((resolve) => setTimeout(resolve, 120))
             return 'value'
           },
           { leaseTtlMs: 20 }
@@ -2227,11 +2398,11 @@ describe('crossflight core', () => {
       }
       const crossflight = createCrossflight({ cache, coordinator })
 
-      const call = crossflight.wrap('close:hung-cleanup', signal =>
+      const call = crossflight.wrap('close:hung-cleanup', (signal) =>
         stall(signal)
       )
 
-      await new Promise(resolve => setTimeout(resolve, 10))
+      await new Promise((resolve) => setTimeout(resolve, 10))
       await crossflight.close()
 
       await expect(call).rejects.toBeInstanceOf(CoordinationClosedError)
@@ -2281,7 +2452,7 @@ describe('crossflight core', () => {
       const coordinator = {
         async acquire() {
           acquireCalls += 1
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise((resolve) => setTimeout(resolve, 100))
 
           return null
         },
@@ -2300,7 +2471,7 @@ describe('crossflight core', () => {
 
       // The late answer is a miss, so there is no lease to release and no
       // retry to start: the flight is already gone.
-      await new Promise(resolve => setTimeout(resolve, 120))
+      await new Promise((resolve) => setTimeout(resolve, 120))
       expect(acquireCalls).toBe(1)
 
       await crossflight.close()
@@ -2309,7 +2480,7 @@ describe('crossflight core', () => {
 
   describe('publication ownership', () => {
     const sleep = (ms: number) =>
-      new Promise(resolve => setTimeout(resolve, ms))
+      new Promise((resolve) => setTimeout(resolve, ms))
 
     // A cache whose write is slow: a publication can outlive a short lease.
     const slowWriteCache = (writeMs: number) => {
@@ -2429,17 +2600,19 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
-        crossflight.wrap('slow:loss:key', async () => 'value', { leaseTtlMs: 60 })
+        crossflight.wrap('slow:loss:key', async () => 'value', {
+          leaseTtlMs: 60,
+        })
       ).resolves.toBe('value')
 
       expect(cache.values.get('slow:loss:key')).toBe('value')
       expect(
         events.filter(
-          event =>
+          (event) =>
             (event as { type: string }).type === 'failed' &&
             (event as { error?: unknown }).error instanceof OwnershipLostError
         )
@@ -2538,7 +2711,7 @@ describe('crossflight core', () => {
 
       const hung = crossflight.wrap(
         'hung:loader:key',
-        signal => {
+        (signal) => {
           loaderSignal = signal
           // Ignores the abort entirely.
           return new Promise<string>(() => undefined)
@@ -2595,11 +2768,13 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event),
+        onEvent: (event) => events.push(event),
       })
 
       await expect(
-        crossflight.wrap('slow:drain:key', async () => 'value', { leaseTtlMs: 60 })
+        crossflight.wrap('slow:drain:key', async () => 'value', {
+          leaseTtlMs: 60,
+        })
       ).resolves.toBe('value')
 
       expect(renewCalls).toBeGreaterThan(0)
@@ -2607,7 +2782,7 @@ describe('crossflight core', () => {
       // the completed lease and report a spurious ownership loss.
       expect(releasedWithRenewalInFlight).toBe(false)
       expect(
-        events.filter(event => (event as { type: string }).type === 'failed')
+        events.filter((event) => (event as { type: string }).type === 'failed')
       ).toHaveLength(0)
 
       await crossflight.close()
@@ -2618,7 +2793,7 @@ describe('crossflight core', () => {
     type ObservedEvent = { type: string; key?: string; error?: unknown }
 
     const failedEvents = (events: ObservedEvent[]) =>
-      events.filter(event => event.type === 'failed')
+      events.filter((event) => event.type === 'failed')
 
     const failingCache = () => {
       const cache = new MemoryCache()
@@ -2650,7 +2825,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2670,7 +2845,7 @@ describe('crossflight core', () => {
         cache: new MemoryCache(),
         coordinator: throwOnWaitCoordinator('wait boom'),
         maxRetryAttempts: 2,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2697,7 +2872,7 @@ describe('crossflight core', () => {
         cache: new MemoryCache(),
         coordinator,
         maxRetryAttempts: 1,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2717,7 +2892,9 @@ describe('crossflight core', () => {
         async acquire(key: string) {
           return {
             key,
-            async renew() { return true },
+            async renew() {
+              return true
+            },
             async complete() {},
             async abandon() {},
           }
@@ -2728,7 +2905,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2751,7 +2928,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: failingCache(),
         coordinator: new InMemoryCoordinator(),
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2781,7 +2958,7 @@ describe('crossflight core', () => {
         coordinator,
         failureMode: 'fail-open',
         maxRetryAttempts: 1,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2798,7 +2975,6 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
-
     it('emits exactly one failed event when cache.set throws', async () => {
       const events: ObservedEvent[] = []
       const cache = new MemoryCache()
@@ -2809,7 +2985,9 @@ describe('crossflight core', () => {
         async acquire(key: string) {
           return {
             key,
-            async renew() { return true },
+            async renew() {
+              return true
+            },
             async complete() {},
             async abandon() {},
           }
@@ -2820,7 +2998,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2858,14 +3036,14 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
         crossflight.wrap(
           'dedupe:renew:throw',
           async () => {
-            await new Promise(resolve => setTimeout(resolve, 120))
+            await new Promise((resolve) => setTimeout(resolve, 120))
             return 'value'
           },
           { leaseTtlMs: 40 }
@@ -2873,7 +3051,9 @@ describe('crossflight core', () => {
       ).rejects.toThrow('renew boom')
 
       const failed = failedEvents(events)
-      const renewalFailed = events.filter(event => event.type === 'renewal_failed')
+      const renewalFailed = events.filter(
+        (event) => event.type === 'renewal_failed'
+      )
       expect(renewalFailed).toHaveLength(1)
       expect(failed).toHaveLength(1)
       expect((failed[0]!.error as Error).message).toBe('renew boom')
@@ -2894,7 +3074,9 @@ describe('crossflight core', () => {
               'abort',
               () => {
                 clearTimeout(timer)
-                reject(new DOMException('The operation was aborted', 'AbortError'))
+                reject(
+                  new DOMException('The operation was aborted', 'AbortError')
+                )
               },
               { once: true }
             )
@@ -2906,7 +3088,7 @@ describe('crossflight core', () => {
         cache: new MemoryCache(),
         coordinator,
         defaultTimeoutMs: 40,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2931,7 +3113,9 @@ describe('crossflight core', () => {
         async acquire(key: string) {
           return {
             key,
-            async renew() { return true },
+            async renew() {
+              return true
+            },
             async complete() {},
             async abandon() {},
           }
@@ -2942,11 +3126,11 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       const pending = crossflight.wrap('dedupe:close:abort', async () => {
-        await new Promise(resolve => setTimeout(resolve, 60))
+        await new Promise((resolve) => setTimeout(resolve, 60))
         return 'value'
       })
 
@@ -2966,7 +3150,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator: new InMemoryCoordinator(),
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
@@ -2997,7 +3181,9 @@ describe('crossflight core', () => {
           if (acquireCalls === 1) {
             return {
               key,
-              async renew() { return false },
+              async renew() {
+                return false
+              },
               async complete() {},
               async abandon() {},
             }
@@ -3015,7 +3201,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache,
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       const result = await crossflight.wrap(
@@ -3045,11 +3231,14 @@ describe('crossflight core', () => {
         cache: new MemoryCache(),
         coordinator,
         failureMode: 'fail-open',
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       await expect(
-        crossflight.wrap('dedupe:fail:open:recovered', async () => 'fallback-value')
+        crossflight.wrap(
+          'dedupe:fail:open:recovered',
+          async () => 'fallback-value'
+        )
       ).resolves.toBe('fallback-value')
 
       const failed = failedEvents(events)
@@ -3060,79 +3249,15 @@ describe('crossflight core', () => {
     })
   })
 
-  const runLifecycleChild = (script: string) =>
-    spawnSync(process.execPath, ['--import=tsx', '--eval', script], {
-      cwd: process.cwd(),
-      timeout: 10_000,
-      encoding: 'utf8',
-    })
-
-  it('does not keep an exiting process alive for a pending renewal timer', () => {
-    const script = `
-      import { createCrossflight } from './src/index.ts'
-
-      const coordinator = {
-        async acquire(key) {
-          return {
-            key,
-            async renew() { return true },
-            async complete() {},
-            async abandon() {},
-          }
-        },
-        async waitForChange() {},
-        async close() {},
-      }
-
-      const cache = {
-        async get() { return { hit: false } },
-        async set() {},
-      }
-
-      const crossflight = createCrossflight({ cache, coordinator })
-      void crossflight.wrap('lifecycle:renewal:key', () => new Promise(() => {}), { ttl: 3000 })
-    `
-
-    const result = runLifecycleChild(script)
-
-    expect(result.signal).toBeNull()
-    expect(result.status).toBe(0)
-  })
-
-  it('does not keep an exiting process alive for a pending per-call timeout', () => {
-    const script = `
-      import { createCrossflight } from './src/index.ts'
-
-      const coordinator = {
-        async acquire() { throw new Error('coordinator down') },
-        async waitForChange() {},
-        async close() {},
-      }
-
-      const cache = {
-        async get() { return { hit: false } },
-        async set() {},
-      }
-
-      const crossflight = createCrossflight({ cache, coordinator })
-      void crossflight.wrap('lifecycle:timeout:key', () => new Promise(() => {}), { failureMode: 'fail-open', timeoutMs: 60000 })
-    `
-
-    const result = runLifecycleChild(script)
-
-    expect(result.signal).toBeNull()
-    expect(result.status).toBe(0)
-  })
-
   describe('caller-scoped cancellation', () => {
     type ObservedEvent = { type: string; key?: string; error?: unknown }
 
     const failedEvents = (events: ObservedEvent[]) =>
-      events.filter(event => event.type === 'failed')
+      events.filter((event) => event.type === 'failed')
 
     const deferred = () => {
       let resolve!: () => void
-      const promise = new Promise<void>(res => {
+      const promise = new Promise<void>((res) => {
         resolve = res
       })
       return { promise, resolve }
@@ -3149,7 +3274,9 @@ describe('crossflight core', () => {
             'abort',
             () => {
               clearTimeout(timer)
-              reject(new DOMException('The operation was aborted', 'AbortError'))
+              reject(
+                new DOMException('The operation was aborted', 'AbortError')
+              )
             },
             { once: true }
           )
@@ -3207,7 +3334,10 @@ describe('crossflight core', () => {
         },
         { signal: controller.signal }
       )
-      const joiner = crossflight.wrap('cancel:owner', async () => 'joiner-value')
+      const joiner = crossflight.wrap(
+        'cancel:owner',
+        async () => 'joiner-value'
+      )
 
       controller.abort(new Error('owner-cancelled'))
       gate.resolve()
@@ -3224,7 +3354,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({ cache, coordinator })
 
       const owner = crossflight.wrap('cancel:timeout', async () => {
-        await new Promise(resolve => setTimeout(resolve, 120))
+        await new Promise((resolve) => setTimeout(resolve, 120))
         return 'shared-value'
       })
       const joiner = crossflight.wrap(
@@ -3233,7 +3363,7 @@ describe('crossflight core', () => {
         { timeoutMs: 20 }
       )
 
-      const error = await joiner.catch(e => e)
+      const error = await joiner.catch((e) => e)
 
       expect(error).toBeInstanceOf(CoordinationTimeoutError)
       expect((error as CoordinationTimeoutError).key).toBe('cancel:timeout')
@@ -3254,12 +3384,15 @@ describe('crossflight core', () => {
       const owner = crossflight.wrap(
         'cancel:default',
         async () => {
-          await new Promise(resolve => setTimeout(resolve, 120))
+          await new Promise((resolve) => setTimeout(resolve, 120))
           return 'shared-value'
         },
         { timeoutMs: 400 }
       )
-      const joiner = crossflight.wrap('cancel:default', async () => 'joiner-value')
+      const joiner = crossflight.wrap(
+        'cancel:default',
+        async () => 'joiner-value'
+      )
 
       await expect(joiner).rejects.toBeInstanceOf(CoordinationTimeoutError)
       await expect(owner).resolves.toBe('shared-value')
@@ -3280,7 +3413,7 @@ describe('crossflight core', () => {
           },
           { timeoutMs: 1000 }
         )
-        .catch(e => e)
+        .catch((e) => e)
 
       expect(error).toBeInstanceOf(Error)
       expect((error as Error).message).toBe('loader boom')
@@ -3293,7 +3426,7 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator: abortableWaiter(),
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       const ownerController = new AbortController()
@@ -3332,7 +3465,7 @@ describe('crossflight core', () => {
 
       const error = await crossflight
         .wrap('cancel:hang', () => new Promise(() => {}), { timeoutMs: 20 })
-        .catch(e => e)
+        .catch((e) => e)
 
       expect(error).toBeInstanceOf(CoordinationTimeoutError)
       expect((error as CoordinationTimeoutError).key).toBe('cancel:hang')
@@ -3399,7 +3532,7 @@ describe('crossflight core', () => {
           return null // the retry waits for another owner
         },
         async waitForChange() {
-          await new Promise(resolve => setTimeout(resolve, 120))
+          await new Promise((resolve) => setTimeout(resolve, 120))
           await cache.set('cancel:retry', 'recovered-value')
         },
         async close() {},
@@ -3438,11 +3571,11 @@ describe('crossflight core', () => {
       const crossflight = createCrossflight({
         cache: new MemoryCache(),
         coordinator,
-        onEvent: event => events.push(event as ObservedEvent),
+        onEvent: (event) => events.push(event as ObservedEvent),
       })
 
       const owner = crossflight.wrap('cancel:close', async () => {
-        await new Promise(resolve => setTimeout(resolve, 60))
+        await new Promise((resolve) => setTimeout(resolve, 60))
         return 'value'
       })
       const joiner = crossflight.wrap('cancel:close', async () => 'value')
@@ -3484,7 +3617,7 @@ describe('crossflight core', () => {
   describe('abort-aware loading', () => {
     const deferred = () => {
       let resolve!: () => void
-      const promise = new Promise<void>(res => {
+      const promise = new Promise<void>((res) => {
         resolve = res
       })
       return { promise, resolve }
@@ -3544,7 +3677,7 @@ describe('crossflight core', () => {
           },
           { leaseTtlMs: 30, timeoutMs: 2000 }
         )
-        .catch(e => e)
+        .catch((e) => e)
 
       expect(error).toBeInstanceOf(OwnershipLostError)
       expect(Date.now() - t0).toBeLessThan(500)
@@ -3580,7 +3713,7 @@ describe('crossflight core', () => {
           },
           { signal: controller.signal }
         )
-        .catch(e => e)
+        .catch((e) => e)
 
       expect((error as Error).message).toBe('gone')
       expect(loadRuns).toBe(0)
@@ -3599,7 +3732,7 @@ describe('crossflight core', () => {
         async set<T>(key: string, value: T) {
           writes.push('start:' + String(value))
           if (!releaseFirst) {
-            await new Promise<void>(resolve => {
+            await new Promise<void>((resolve) => {
               releaseFirst = resolve
             })
           }
@@ -3613,16 +3746,16 @@ describe('crossflight core', () => {
 
       const first = crossflight
         .wrap('write:race', async () => 'old', { signal: controller.signal })
-        .catch(e => e)
+        .catch((e) => e)
 
       while (writes.length === 0) {
-        await new Promise(resolve => setTimeout(resolve, 5))
+        await new Promise((resolve) => setTimeout(resolve, 5))
       }
 
       controller.abort(new Error('cancelled'))
       const second = crossflight.wrap('write:race', async () => 'new')
 
-      await new Promise(resolve => setTimeout(resolve, 60))
+      await new Promise((resolve) => setTimeout(resolve, 60))
       releaseFirst?.()
 
       const [firstResult, secondResult] = await Promise.all([first, second])
@@ -3631,7 +3764,5 @@ describe('crossflight core', () => {
       expect([...store.values()]).toEqual(['new'])
       expect(writes).toEqual(['start:old', 'land:old', 'start:new', 'land:new'])
     })
-
   })
 })
-

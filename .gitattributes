@@ -1,0 +1,6 @@
+# Normalize line endings: LF in the repository and in every working tree.
+#
+# `eol=lf` overrides core.autocrlf, so a Windows checkout keeps LF as well and
+# Prettier's `endOfLine: "lf"` (see .prettierrc) agrees on every platform.
+# `text=auto` still lets Git detect binaries by content and leave them alone.
+* text=auto eol=lf

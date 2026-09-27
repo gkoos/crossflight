@@ -66,9 +66,9 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts",
-    "format": "prettier -w src",
-    "format:check": "prettier --check src",
+    "lint": "eslint src tests benchmarks --ext .ts",
+    "format": "prettier -w src tests benchmarks scripts *.config.ts",
+    "format:check": "prettier --check src tests benchmarks scripts *.config.ts",
     "test": "npm run test:unit && npm run test:integration && npm run test:integration:cluster",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:unit:coverage": "vitest run --config vitest.config.ts --coverage",

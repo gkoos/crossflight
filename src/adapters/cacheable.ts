@@ -7,7 +7,11 @@ export interface CacheableLike {
    * `set` is not a `Promise<void>`. The value is ignored here: accept whatever
    * it resolves.
    */
-  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<unknown>
+  set<T>(
+    key: string,
+    value: T,
+    ttl?: number | CacheSetOptions
+  ): Promise<unknown>
 }
 
 export function cacheableAdapter(cache: CacheableLike): CacheAdapter {

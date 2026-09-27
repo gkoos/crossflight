@@ -8,7 +8,9 @@ parentPort.on('message', ({ targetMs }) => {
   let value = 'crossflight'
 
   while (Date.now() - startedAt < targetMs) {
-    value = pbkdf2Sync(value, BENCHMARK_SALT, 80_000, 32, 'sha256').toString('hex')
+    value = pbkdf2Sync(value, BENCHMARK_SALT, 80_000, 32, 'sha256').toString(
+      'hex'
+    )
   }
 
   parentPort.postMessage({ result: value })
