@@ -155,6 +155,11 @@ services:
       - default
     environment:
       REDIS_URL: redis://redis:6379
+      # The generated suites' seed and depth, passed through when the caller set
+      # them: a nightly run explores a different seed at a greater depth, and the
+      # differential inside this suite is what benefits.
+      CROSSFLIGHT_TEST_SEED: ${CROSSFLIGHT_TEST_SEED:-}
+      CROSSFLIGHT_TEST_RUNS: ${CROSSFLIGHT_TEST_RUNS:-}
     command: >
       sh -c "npm install --no-fund --no-audit && REDIS_URL=redis://redis:6379 RUN_REDIS_INTEGRATION=1 npx vitest run --config vitest.integration.config.ts"
 
@@ -171,6 +176,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       RUN_REDIS_INTEGRATION: "1"
+      CROSSFLIGHT_TEST_SEED: ${CROSSFLIGHT_TEST_SEED:-}
+      CROSSFLIGHT_TEST_RUNS: ${CROSSFLIGHT_TEST_RUNS:-}
     command: >
       sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.integration.config.ts --coverage"
 
@@ -187,6 +194,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       RUN_REDIS_INTEGRATION: "1"
+      CROSSFLIGHT_TEST_SEED: ${CROSSFLIGHT_TEST_SEED:-}
+      CROSSFLIGHT_TEST_RUNS: ${CROSSFLIGHT_TEST_RUNS:-}
     command: >
       sh -c "npm install --no-fund --no-audit && npx vitest run --config vitest.coverage.config.ts --coverage"
 

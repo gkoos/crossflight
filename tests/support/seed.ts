@@ -14,6 +14,17 @@ import { it } from 'vitest'
  */
 export const TEST_SEED_ENV = 'CROSSFLIGHT_TEST_SEED'
 
+/**
+ * The depth protocol for generated suites.
+ *
+ * A suite tunes its case count to what one of its cases costs, and a deep run
+ * scales all of them together instead of replacing them with one number: a
+ * transcript case costs milliseconds and has room for hundreds, while a case
+ * that waits for a real ttl has room for tens. Unset means every suite runs the
+ * count it chose.
+ */
+export const TEST_RUNS_ENV = 'CROSSFLIGHT_TEST_RUNS'
+
 const DEFAULT_RUNS = 100
 
 /**
@@ -50,12 +61,55 @@ export function resolveTestSeed(suite: string): number {
   return seed
 }
 
-/** The command that reproduces a failing run, whatever platform it is read on. */
-export function replayHint(suite: string, seed: number): string {
+/**
+ * Every suite's own case count, scaled by `CROSSFLIGHT_TEST_RUNS` when it is
+ * set. The multiplier is read once per suite, so a deep run deepens every
+ * property of it by the same factor.
+ */
+export function resolveRunsMultiplier(): number {
+  const configured = process.env[TEST_RUNS_ENV]?.trim()
+
+  if (!configured) {
+    return 1
+  }
+
+  const multiplier = Number(configured)
+
+  if (!Number.isInteger(multiplier) || multiplier < 1) {
+    throw new Error(
+      `${TEST_RUNS_ENV} must be a positive integer, received "${configured}"`
+    )
+  }
+
+  return multiplier
+}
+
+/**
+ * The command that reproduces a failing run, whatever platform it is read on. A
+ * deep run is only replayable with its depth as well as its seed, so the
+ * multiplier is part of the hint whenever it is not the default.
+ */
+export function replayHint(
+  suite: string,
+  seed: number,
+  runsMultiplier = 1
+): string {
+  const assignments: Array<[string, number]> = [[TEST_SEED_ENV, seed]]
+
+  if (runsMultiplier !== 1) {
+    assignments.push([TEST_RUNS_ENV, runsMultiplier])
+  }
+
+  const powershell = assignments
+    .map(([name, value]) => `$env:${name}='${value}'`)
+    .join('; ')
+  const posix = assignments.map(([name, value]) => `${name}=${value}`).join(' ')
+  const depth = runsMultiplier === 1 ? '' : ` at ${runsMultiplier}x depth`
+
   return [
-    `seed ${seed} explored "${suite}" - replay it with:`,
-    `  PowerShell: $env:${TEST_SEED_ENV}='${seed}'; npm run test:generated`,
-    `  POSIX:      ${TEST_SEED_ENV}=${seed} npm run test:generated`,
+    `seed ${seed} explored "${suite}"${depth} - replay it with:`,
+    `  PowerShell: ${powershell}; npm run test:generated`,
+    `  POSIX:      ${posix} npm run test:generated`,
   ].join('\n')
 }
 
@@ -65,21 +119,49 @@ export interface PropertySuiteOptions {
 }
 
 export interface PropertyOptions {
+  /** Generated cases for this property alone; scaled like the suite's own. */
   runs?: number
+  /**
+   * The most cases a run may ask this property for, however deep it is. A case
+   * that parks real wall-clock time - a real ttl, a real wait, a real deadline -
+   * turns depth into seconds as well as cases, so such a property caps its depth
+   * rather than letting a ten-times run ask for ten times the sleeping: the
+   * adapter ttl property runs 12 cases in about four seconds, and 120 of them
+   * would outlast the generated config's 30-second timeout.
+   */
+  maxRuns?: number
 }
 
 /**
  * Builds the `it` a generated suite registers its properties with. Every
- * property runs under the suite's seed, and a failure is re-thrown with the
- * replay command attached: fast-check already reports the counterexample and
- * the shrink path, which is what the reader needs second.
+ * property runs under the suite's seed - and at the suite's depth, scaled by
+ * `CROSSFLIGHT_TEST_RUNS` - and a failure is re-thrown with the replay command
+ * attached: fast-check already reports the counterexample and the shrink path,
+ * which is what the reader needs second.
  */
 export function createPropertySuite(
   suite: string,
   options: PropertySuiteOptions = {}
 ) {
   const seed = resolveTestSeed(suite)
-  const defaultRuns = options.runs ?? DEFAULT_RUNS
+  const runsMultiplier = resolveRunsMultiplier()
+  const defaultRuns = (options.runs ?? DEFAULT_RUNS) * runsMultiplier
+
+  /**
+   * What one property runs: the count its suite or it asked for, scaled by the
+   * run's depth, and capped where the property set a ceiling because a case of
+   * it costs real time (see `PropertyOptions.maxRuns`).
+   */
+  const casesFor = (overrides: PropertyOptions): number => {
+    const requested =
+      overrides.runs === undefined
+        ? defaultRuns
+        : overrides.runs * runsMultiplier
+
+    return overrides.maxRuns === undefined
+      ? requested
+      : Math.min(requested, overrides.maxRuns)
+  }
 
   return function itProperty<Ts>(
     title: string,
@@ -97,7 +179,7 @@ export function createPropertySuite(
           }),
           {
             seed,
-            numRuns: overrides.runs ?? defaultRuns,
+            numRuns: casesFor(overrides),
             verbose: fc.VerbosityLevel.Verbose,
           }
         )
@@ -105,7 +187,7 @@ export function createPropertySuite(
         const details = error instanceof Error ? error.message : String(error)
 
         throw new Error(
-          `${title}\n\n${details}\n\n${replayHint(suite, seed)}`,
+          `${title}\n\n${details}\n\n${replayHint(suite, seed, runsMultiplier)}`,
           { cause: error }
         )
       }

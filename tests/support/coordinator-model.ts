@@ -19,6 +19,12 @@ import type { Coordinator, Lease } from '../../src/types.js'
  * scenario. A clock therefore *realises* a scenario's jumps - a backend that can
  * only expire everything at once rewrites each jump to that larger one - and the
  * model, which reads the realised scenario, ends up in the same state.
+ *
+ * Waits are in the scenario too: a `waitForChange` is started where the scenario
+ * asks for it and read once every other operation has happened, so a change the
+ * scenario announces is what could have woken it early. The contract is only
+ * that a wait settles - early on a change, or at its own timeout - so the model
+ * expects `resolved`, and a rejection is a difference the comparison reports.
  */
 
 export type ReleaseMode = 'complete' | 'abandon'
@@ -34,6 +40,7 @@ export type Operation =
   | { kind: 'acquire'; key: string; id: number; ttlMs: number }
   | { kind: 'renew'; key: string; id: number }
   | { kind: 'release'; key: string; id: number; mode: ReleaseMode }
+  | { kind: 'wait'; key: string; id: number; timeoutMs: number }
 
 /**
  * What one operation did, in terms the model can produce too. `no-lease` means
@@ -45,6 +52,15 @@ export type Observation =
   | { kind: 'acquire'; key: string; id: number; acquired: boolean }
   | { kind: 'renew'; key: string; id: number; renewed: boolean }
   | { kind: 'release'; key: string; id: number; mode: ReleaseMode }
+  | {
+      kind: 'wait'
+      key: string
+      id: number
+      /** A wait settles on a change or at its own timeout; never by hanging. */
+      settled: 'resolved' | 'rejected'
+      /** Empty when the wait resolved, the error when the coordinator rejected. */
+      reason: string
+    }
   | {
       kind: 'no-lease'
       operation: 'renew' | 'release'
@@ -186,24 +202,39 @@ export type RawOperation =
   | { kind: 'acquire'; key: string; ttlMs: number }
   | { kind: 'renew'; handle: number }
   | { kind: 'release'; handle: number; mode: ReleaseMode }
+  /** A wait on the key of the nth acquisition. */
+  | { kind: 'wait'; handle: number; timeoutMs: number }
+  /**
+   * A wait on a key of the scenario's own: a caller may wait for a change before
+   * it holds anything, and the model has to expect the same wake-up then.
+   */
+  | { kind: 'wait-key'; key: string; timeoutMs: number }
 
 export interface Scenario {
   operations: Operation[]
 }
 
 /**
- * Names the acquisitions a scenario refers to: a renewal or a release is written
- * against the nth acquisition, which is how a scenario can renew a lease whose
- * acquisition was refused, or release one whose owner has since changed.
+ * Names the acquisitions a scenario refers to: a renewal, a release or a wait is
+ * written against the nth acquisition, which is how a scenario can renew a lease
+ * whose acquisition was refused, release one whose owner has since changed, or
+ * wait on a key that was never taken. A wait may instead name a key of its own
+ * (`wait-key`), which is a caller waiting - as a caller may - before it has taken
+ * anything.
  *
- * Every scenario ends with a jump past every lease and one acquisition per key
- * it touched. A lease the implementation left behind but the model released
- * shows up as a difference in those last observations.
+ * Every scenario ends with a jump past every lease and one acquisition per key it
+ * touched - a key a wait named included, so the change that closes the scenario is
+ * announced for that key too. A lease the implementation left behind but the model
+ * released shows up as a difference in those last observations.
  */
 export const materialize = (raw: RawOperation[]): Scenario => {
   const acquired: Array<{ key: string; id: number }> = []
   const touched: string[] = []
   const operations: Operation[] = []
+  // The identity of the waits that name no acquisition: negative, so it cannot
+  // collide with an acquisition's id and the order both sides read their waits
+  // in is the same.
+  let standaloneWaits = 0
 
   for (const operation of raw) {
     if (operation.kind === 'advance') {
@@ -222,21 +253,53 @@ export const materialize = (raw: RawOperation[]): Scenario => {
       continue
     }
 
+    if (operation.kind === 'wait-key') {
+      // Waiting for a key nothing has taken yet is a wait like any other: it is
+      // the key that is touched, and the scenario's closing acquisition of it is
+      // what announces the change a wake-up would need.
+      if (!touched.includes(operation.key)) {
+        touched.push(operation.key)
+      }
+
+      operations.push({
+        kind: 'wait',
+        key: operation.key,
+        id: -1 - standaloneWaits,
+        timeoutMs: operation.timeoutMs,
+      })
+      standaloneWaits += 1
+      continue
+    }
+
     if (acquired.length === 0) {
       continue
     }
 
     const target = acquired[operation.handle % acquired.length]!
-    operations.push(
-      operation.kind === 'renew'
-        ? { kind: 'renew', key: target.key, id: target.id }
-        : {
-            kind: 'release',
-            key: target.key,
-            id: target.id,
-            mode: operation.mode,
-          }
-    )
+
+    if (operation.kind === 'renew') {
+      operations.push({ kind: 'renew', key: target.key, id: target.id })
+      continue
+    }
+
+    if (operation.kind === 'release') {
+      operations.push({
+        kind: 'release',
+        key: target.key,
+        id: target.id,
+        mode: operation.mode,
+      })
+      continue
+    }
+
+    // A wait is written against an acquisition, and waits on that key: the
+    // scenario is what gives it a key and an identity the model can match.
+    operations.push({
+      kind: 'wait',
+      key: target.key,
+      id: target.id,
+      timeoutMs: operation.timeoutMs,
+    })
   }
 
   operations.push({ kind: 'advance', byMs: EXPIRE_EVERYTHING_MS })
@@ -273,13 +336,36 @@ const releaseArbitrary: fc.Arbitrary<RawOperation> = fc.record({
   mode: fc.constantFrom('complete' as const, 'abandon' as const),
 })
 
+/**
+ * A wait of a few milliseconds: what matters is that it settles, and that a
+ * change announced while it is parked may settle it earlier. Longer windows
+ * would only make the suite slower, not the scenario different.
+ *
+ * Half the waits name an acquisition and half a key: a caller waiting before it
+ * owns anything is a wait the contract has to answer too, and it settles the same
+ * way - on the change the scenario's last acquisition of that key announces.
+ */
+const waitArbitrary: fc.Arbitrary<RawOperation> = fc.record({
+  kind: fc.constant('wait' as const),
+  handle: fc.nat({ max: 5 }),
+  timeoutMs: fc.constantFrom(5, 10),
+})
+
+const waitKeyArbitrary: fc.Arbitrary<RawOperation> = fc.record({
+  kind: fc.constant('wait-key' as const),
+  key: fc.constantFrom(...SCENARIO_KEYS),
+  timeoutMs: fc.constantFrom(5, 10),
+})
+
 export const scenarioArbitrary: fc.Arbitrary<Scenario> = fc
   .array(
     fc.oneof(
       advanceArbitrary,
       acquireArbitrary,
       renewArbitrary,
-      releaseArbitrary
+      releaseArbitrary,
+      waitArbitrary,
+      waitKeyArbitrary
     ),
     { minLength: 1, maxLength: 14 }
   )
@@ -293,6 +379,11 @@ export const modelObservations = (
   const model = new CoordinatorModel()
   const leases = new Map<number, ModelLease>()
   const observations: Observation[] = []
+
+  // A wait is started by its operation and read once every other operation has
+  // happened: reading it there is what lets a change settle it early, and both
+  // sides append the outcomes in the same order.
+  const pendingWaits: Array<{ key: string; id: number }> = []
 
   for (const operation of scenario.operations) {
     switch (operation.kind) {
@@ -367,7 +458,29 @@ export const modelObservations = (
         })
         break
       }
+
+      case 'wait': {
+        // The outcome is not known yet, and the contract cannot see it: the
+        // change that may settle this wait early has not happened.
+        pendingWaits.push({ key: operation.key, id: operation.id })
+        break
+      }
     }
+  }
+
+  // A healthy coordinator always settles a wait - early on a change, or at its
+  // own timeout - so a rejection in the implementation's list is a difference
+  // these two lists are here to report.
+  for (const wait of [...pendingWaits].sort(
+    (left, right) => left.id - right.id
+  )) {
+    observations.push({
+      kind: 'wait',
+      key: wait.key,
+      id: wait.id,
+      settled: 'resolved',
+      reason: '',
+    })
   }
 
   return observations
@@ -385,6 +498,14 @@ export const implementationObservations = async (
   const leases = new Map<number, Lease>()
   const observations: Observation[] = []
   const minTtlMs = participant.minTtlMs ?? 0
+
+  // Started by their operation, read once everything else has happened - the
+  // same shape the model uses, so the two lists stay aligned.
+  const pendingWaits: Array<{
+    key: string
+    id: number
+    outcome: Promise<{ settled: 'resolved' | 'rejected'; reason: string }>
+  }> = []
 
   for (const operation of scenario.operations) {
     try {
@@ -464,6 +585,31 @@ export const implementationObservations = async (
           })
           break
         }
+
+        case 'wait': {
+          // Started and not awaited: what settles a wait early is a change that
+          // has not been announced yet. Both handlers are attached here, so a
+          // rejection becomes an observation instead of an unhandled one.
+          pendingWaits.push({
+            key: operation.key,
+            id: operation.id,
+            outcome: coordinator
+              .waitForChange(participant.key(operation.key), {
+                timeoutMs: operation.timeoutMs,
+              })
+              .then(
+                (): { settled: 'resolved'; reason: string } => ({
+                  settled: 'resolved',
+                  reason: '',
+                }),
+                (error): { settled: 'rejected'; reason: string } => ({
+                  settled: 'rejected',
+                  reason: describeError(error),
+                })
+              ),
+          })
+          break
+        }
       }
     } catch (error) {
       observations.push({
@@ -472,6 +618,19 @@ export const implementationObservations = async (
         message: describeError(error),
       })
     }
+  }
+
+  // Read the waits once everything else has happened: a change the operations
+  // above announced is what a wake-up would have been.
+  for (const wait of [...pendingWaits].sort(
+    (left, right) => left.id - right.id
+  )) {
+    observations.push({
+      kind: 'wait',
+      key: wait.key,
+      id: wait.id,
+      ...(await wait.outcome),
+    })
   }
 
   return observations

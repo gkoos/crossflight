@@ -47,7 +47,10 @@ jobs:
   # The generated suites also run inside the coverage job above. This job is the
   # fast, Docker-free signal for them (and for a different seed, when
   # CROSSFLIGHT_TEST_SEED is set for the run), so a failure is attributed to a
-  # property rather than to the suite as a whole.
+  # property rather than to the suite as a whole. The seed space and the depth a
+  # pull request has no time for are explored nightly instead
+  # (.github/workflows/nightly.yml), which is also where the Redis differential
+  # gets a fresh seed.
   generated:
     runs-on: ubuntu-latest
     steps:
