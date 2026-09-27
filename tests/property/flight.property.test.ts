@@ -29,6 +29,13 @@ import { createPropertySuite } from '../support/seed.js'
  * - a cancellation rejects that caller alone; only the last caller to leave
  *   takes the flight with it, and no lease is left behind either way;
  * - the events a flight reports are a function of its arrivals.
+ *
+ * A case here parks real time: a loader is held until the case releases it,
+ * and a wait follows for the flight to settle - about thirty milliseconds a
+ * case. The properties that park that time cap their depth at twice the
+ * suite's count: ten times it is eighteen seconds in one property, most of
+ * this config's timeout. The properties that only count calls and cached
+ * reads run the full depth.
  */
 const itProperty = createPropertySuite('flight', { runs: 60 })
 
@@ -180,7 +187,8 @@ describe('a shared flight', () => {
       } finally {
         await crossflight.close()
       }
-    }
+    },
+    { maxRuns: 120 }
   )
 
   itProperty(
@@ -243,7 +251,8 @@ describe('a shared flight', () => {
       } finally {
         await crossflight.close()
       }
-    }
+    },
+    { maxRuns: 120 }
   )
 
   itProperty(
@@ -304,7 +313,8 @@ describe('a shared flight', () => {
       } finally {
         await crossflight.close()
       }
-    }
+    },
+    { maxRuns: 120 }
   )
 
   itProperty(
@@ -401,7 +411,8 @@ describe('a shared flight', () => {
       } finally {
         await crossflight.close()
       }
-    }
+    },
+    { maxRuns: 120 }
   )
 
   itProperty(
@@ -530,7 +541,8 @@ describe('a shared flight', () => {
       } finally {
         await crossflight.close()
       }
-    }
+    },
+    { maxRuns: 120 }
   )
 
   itProperty(

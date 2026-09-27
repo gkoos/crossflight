@@ -119,7 +119,10 @@ describe('the shipped cache adapters over their real backends', () => {
         })
       }
     },
-    { runs: 12 }
+    // Each case sleeps a real `ttl + 60`ms once per adapter - about 300ms a case
+    // - so depth is capped at twice this count instead of the ten times a deep
+    // run would otherwise ask for, which would outlast this config's timeout.
+    { runs: 12, maxRuns: 24 }
   )
 
   itProperty(

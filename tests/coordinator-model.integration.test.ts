@@ -207,9 +207,10 @@ describe.runIf(shouldRun)(
           await client.quit().catch(() => undefined)
         }
       },
-      // Real waits cost real time, so this is the case count that keeps the suite
-      // at seconds rather than minutes.
-      { runs: 6 }
+      // Real waits and real sleeps cost real time, so depth is capped at twice
+      // this count: ten times it would be a minute of sleeping rather than a
+      // deeper look at expiry.
+      { runs: 6, maxRuns: 12 }
     )
 
     /**

@@ -1,6 +1,6 @@
 import { createCache } from 'cache-manager'
 import { Cacheable } from 'cacheable'
-import { Keyv } from 'keyv'
+import Keyv from 'keyv'
 
 import { cacheableAdapter } from '../../src/adapters/cacheable.js'
 import { cacheManagerAdapter } from '../../src/adapters/cache-manager.js'

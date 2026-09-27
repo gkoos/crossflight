@@ -38,6 +38,11 @@ import { createPropertySuite } from '../support/seed.js'
  * - every call settles (a hung flight is a failure too), and no lease is left
  *   behind unless the release the plan called for actually failed; a fault
  *   index the run never reached excuses nothing.
+ *
+ * A case parks real time the same way - a loader the case releases, and the
+ * settle it waits for afterwards - about a fifth of a second of it with a
+ * fault plan, so both properties cap their depth at twice the suite's count
+ * rather than the ten times a deep run would ask for.
  */
 const itProperty = createPropertySuite('transcript', { runs: 30 })
 
@@ -561,7 +566,8 @@ describe('a generated transcript', () => {
       if (!result.fired.complete && !result.fired.abandon) {
         expect(result.leaked).toBe(0)
       }
-    }
+    },
+    { maxRuns: 60 }
   )
 
   itProperty(
@@ -590,6 +596,7 @@ describe('a generated transcript', () => {
         // step cached, it was one value for all of them: they shared a flight.
         expect(new Set(step.values).size).toBe(1)
       }
-    }
+    },
+    { maxRuns: 60 }
   )
 })

@@ -567,7 +567,12 @@ describe('a generated deadline and retry transcript', () => {
       // Termination, attribution, stampede protection, the retry schedule and
       // the lease bookkeeping, in one report: the entries name what broke.
       expect(violationsOf(scenario, report)).toEqual([])
-    }
+    },
+    // The clocks collide inside a real timeout here: the case waits out the
+    // deadlines it generated, about fifty milliseconds a case, so ten times the
+    // suite's count is twenty seconds - most of this config's timeout. Depth is
+    // capped at twice the count instead.
+    { maxRuns: 80 }
   )
 
   itProperty(

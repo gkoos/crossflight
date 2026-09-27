@@ -121,6 +121,15 @@ export interface PropertySuiteOptions {
 export interface PropertyOptions {
   /** Generated cases for this property alone; scaled like the suite's own. */
   runs?: number
+  /**
+   * The most cases a run may ask this property for, however deep it is. A case
+   * that parks real wall-clock time - a real ttl, a real wait, a real deadline -
+   * turns depth into seconds as well as cases, so such a property caps its depth
+   * rather than letting a ten-times run ask for ten times the sleeping: the
+   * adapter ttl property runs 12 cases in about four seconds, and 120 of them
+   * would outlast the generated config's 30-second timeout.
+   */
+  maxRuns?: number
 }
 
 /**
@@ -138,6 +147,22 @@ export function createPropertySuite(
   const runsMultiplier = resolveRunsMultiplier()
   const defaultRuns = (options.runs ?? DEFAULT_RUNS) * runsMultiplier
 
+  /**
+   * What one property runs: the count its suite or it asked for, scaled by the
+   * run's depth, and capped where the property set a ceiling because a case of
+   * it costs real time (see `PropertyOptions.maxRuns`).
+   */
+  const casesFor = (overrides: PropertyOptions): number => {
+    const requested =
+      overrides.runs === undefined
+        ? defaultRuns
+        : overrides.runs * runsMultiplier
+
+    return overrides.maxRuns === undefined
+      ? requested
+      : Math.min(requested, overrides.maxRuns)
+  }
+
   return function itProperty<Ts>(
     title: string,
     arbitrary: fc.Arbitrary<Ts>,
@@ -154,10 +179,7 @@ export function createPropertySuite(
           }),
           {
             seed,
-            numRuns:
-              overrides.runs === undefined
-                ? defaultRuns
-                : overrides.runs * runsMultiplier,
+            numRuns: casesFor(overrides),
             verbose: fc.VerbosityLevel.Verbose,
           }
         )

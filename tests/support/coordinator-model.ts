@@ -202,7 +202,13 @@ export type RawOperation =
   | { kind: 'acquire'; key: string; ttlMs: number }
   | { kind: 'renew'; handle: number }
   | { kind: 'release'; handle: number; mode: ReleaseMode }
+  /** A wait on the key of the nth acquisition. */
   | { kind: 'wait'; handle: number; timeoutMs: number }
+  /**
+   * A wait on a key of the scenario's own: a caller may wait for a change before
+   * it holds anything, and the model has to expect the same wake-up then.
+   */
+  | { kind: 'wait-key'; key: string; timeoutMs: number }
 
 export interface Scenario {
   operations: Operation[]
@@ -212,16 +218,23 @@ export interface Scenario {
  * Names the acquisitions a scenario refers to: a renewal, a release or a wait is
  * written against the nth acquisition, which is how a scenario can renew a lease
  * whose acquisition was refused, release one whose owner has since changed, or
- * wait on a key that was never taken.
+ * wait on a key that was never taken. A wait may instead name a key of its own
+ * (`wait-key`), which is a caller waiting - as a caller may - before it has taken
+ * anything.
  *
- * Every scenario ends with a jump past every lease and one acquisition per key
- * it touched. A lease the implementation left behind but the model released
- * shows up as a difference in those last observations.
+ * Every scenario ends with a jump past every lease and one acquisition per key it
+ * touched - a key a wait named included, so the change that closes the scenario is
+ * announced for that key too. A lease the implementation left behind but the model
+ * released shows up as a difference in those last observations.
  */
 export const materialize = (raw: RawOperation[]): Scenario => {
   const acquired: Array<{ key: string; id: number }> = []
   const touched: string[] = []
   const operations: Operation[] = []
+  // The identity of the waits that name no acquisition: negative, so it cannot
+  // collide with an acquisition's id and the order both sides read their waits
+  // in is the same.
+  let standaloneWaits = 0
 
   for (const operation of raw) {
     if (operation.kind === 'advance') {
@@ -237,6 +250,24 @@ export const materialize = (raw: RawOperation[]): Scenario => {
       const id = acquired.length
       operations.push({ ...operation, id })
       acquired.push({ key: operation.key, id })
+      continue
+    }
+
+    if (operation.kind === 'wait-key') {
+      // Waiting for a key nothing has taken yet is a wait like any other: it is
+      // the key that is touched, and the scenario's closing acquisition of it is
+      // what announces the change a wake-up would need.
+      if (!touched.includes(operation.key)) {
+        touched.push(operation.key)
+      }
+
+      operations.push({
+        kind: 'wait',
+        key: operation.key,
+        id: -1 - standaloneWaits,
+        timeoutMs: operation.timeoutMs,
+      })
+      standaloneWaits += 1
       continue
     }
 
@@ -309,10 +340,20 @@ const releaseArbitrary: fc.Arbitrary<RawOperation> = fc.record({
  * A wait of a few milliseconds: what matters is that it settles, and that a
  * change announced while it is parked may settle it earlier. Longer windows
  * would only make the suite slower, not the scenario different.
+ *
+ * Half the waits name an acquisition and half a key: a caller waiting before it
+ * owns anything is a wait the contract has to answer too, and it settles the same
+ * way - on the change the scenario's last acquisition of that key announces.
  */
 const waitArbitrary: fc.Arbitrary<RawOperation> = fc.record({
   kind: fc.constant('wait' as const),
   handle: fc.nat({ max: 5 }),
+  timeoutMs: fc.constantFrom(5, 10),
+})
+
+const waitKeyArbitrary: fc.Arbitrary<RawOperation> = fc.record({
+  kind: fc.constant('wait-key' as const),
+  key: fc.constantFrom(...SCENARIO_KEYS),
   timeoutMs: fc.constantFrom(5, 10),
 })
 
@@ -323,7 +364,8 @@ export const scenarioArbitrary: fc.Arbitrary<Scenario> = fc
       acquireArbitrary,
       renewArbitrary,
       releaseArbitrary,
-      waitArbitrary
+      waitArbitrary,
+      waitKeyArbitrary
     ),
     { minLength: 1, maxLength: 14 }
   )
