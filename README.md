@@ -130,7 +130,7 @@ All options passed to `createCrossflight()`:
 | `retryBackoff` | `(attempt: number) => number` | stepped 25–200ms | Wait duration per retry attempt |
 | `onEvent` | `(event: CrossflightEvent) => void` | none | Observability hook |
 | `onEventError` | `(error: unknown) => void` | none | Called when `onEvent` throws |
-| `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` instead of re-running the loader for every caller (see [undefined results](#undefined-results)) |
+| `cacheUndefined` | `boolean` | `false` | Cache a loader result of `undefined` by writing every value into a reserved envelope (see [undefined results](#undefined-results)) |
 
 Per-call overrides in `wrap()`: `ttl`, `leaseTtlMs`, `timeoutMs`, `failureMode`, `signal`.
 
@@ -142,7 +142,9 @@ The loader receives the shared flight's `AbortSignal`. Pass it to anything that 
 
 Every built-in adapter reports a stored `undefined` as a miss, because that is what the underlying backends return for a missing key. A loader that resolves `undefined` is therefore never cached: each caller runs it again.
 
-`cacheUndefined: true` closes that gap. Crossflight stores a small marked envelope (`{ "__crossflight_undefined__": true }`) in place of the value and unwraps it on read, so a cached miss behaves like any other cached value. Your own cached values are stored and returned untouched. It is off by default because the marked value is visible to anything else reading the same key.
+`cacheUndefined: true` closes that gap. While it is on, every value Crossflight writes goes into the reserved envelope `{ "__crossflight_envelope__": 1, value }` - a loader result of `undefined` is the same envelope without a `value` key - and is unwrapped on read. Wrapping every value is what makes the format unambiguous: whatever your loader returns comes back exactly as it was, including an object that looks like the envelope itself.
+
+Raw values written by a process that has the option off still read back as they were. Two processes sharing a cache, however, have to agree on the setting: an option-off process reading an enveloped value sees the envelope, not the value, and anything else reading those keys directly has to unwrap it too.
 
 ## Errors
 

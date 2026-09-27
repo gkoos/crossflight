@@ -1392,7 +1392,7 @@ describe('crossflight core', () => {
 
       expect(loadRuns).toBe(1)
       expect(cache.values.get('undefined:cached')).toEqual({
-        __crossflight_undefined__: true,
+        __crossflight_envelope__: 1,
       })
       expect(
         events.some(event => (event as { type: string }).type === 'hit')
@@ -1401,9 +1401,9 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
-    it('unwraps a marked result written by another process', async () => {
+    it('unwraps an envelope written by another process', async () => {
       const cache = adapterLikeCache()
-      cache.values.set('undefined:shared', { __crossflight_undefined__: true })
+      cache.values.set('undefined:shared', { __crossflight_envelope__: 1 })
       const crossflight = createCrossflight({
         cache,
         coordinator: new InMemoryCoordinator(),
@@ -1439,7 +1439,53 @@ describe('crossflight core', () => {
         crossflight.wrap('undefined:real', () => 'other')
       ).resolves.toBe(value)
 
-      expect(cache.values.get('undefined:real')).toBe(value)
+      expect(cache.values.get('undefined:real')).toEqual({
+        __crossflight_envelope__: 1,
+        value,
+      })
+
+      // A raw value written by a process without the option reads back as
+      // itself.
+      cache.values.set('undefined:raw', 'raw-value')
+      await expect(
+        crossflight.wrap('undefined:raw', () => 'unused')
+      ).resolves.toBe('raw-value')
+
+      await crossflight.close()
+    })
+
+    it('round-trips loader values that look like the envelope', async () => {
+      const cache = adapterLikeCache()
+      const crossflight = createCrossflight({
+        cache,
+        coordinator: new InMemoryCoordinator(),
+        cacheUndefined: true,
+      })
+      let loadRuns = 0
+      const oldMarker = { __crossflight_undefined__: true }
+      const envelopeShaped = { __crossflight_envelope__: 1 }
+
+      await expect(
+        crossflight.wrap('undefined:old-marker', () => {
+          loadRuns += 1
+          return oldMarker
+        })
+      ).resolves.toEqual(oldMarker)
+      await expect(
+        crossflight.wrap('undefined:old-marker', () => 'other')
+      ).resolves.toEqual(oldMarker)
+
+      await expect(
+        crossflight.wrap('undefined:envelope-shaped', () => {
+          loadRuns += 1
+          return envelopeShaped
+        })
+      ).resolves.toEqual(envelopeShaped)
+      await expect(
+        crossflight.wrap('undefined:envelope-shaped', () => 'other')
+      ).resolves.toEqual(envelopeShaped)
+
+      expect(loadRuns).toBe(2)
 
       await crossflight.close()
     })

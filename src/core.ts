@@ -27,40 +27,49 @@ const MIN_RENEW_INTERVAL_MS = 25
 const MIN_LEASE_TTL_MS = 2 * MIN_RENEW_INTERVAL_MS
 
 /**
- * Marks a cached `undefined`. Every built-in adapter reports a stored
- * `undefined` as a miss, so without the marker a loader that resolves
- * `undefined` cannot be cached and runs again for every caller.
+ * Envelope Crossflight writes when `cacheUndefined` is on. Every value is
+ * wrapped, so a loader value can be anything - including an object that
+ * looks like the envelope itself - and still come back exactly as it was:
+ * only the outer layer is ever produced by Crossflight, which is what makes
+ * the format unambiguous.
  */
-const UNDEFINED_MARKER = '__crossflight_undefined__'
+const ENVELOPE_MARKER = '__crossflight_envelope__'
+const ENVELOPE_VERSION = 1
 
-interface UndefinedMarker {
-  [UNDEFINED_MARKER]: true
+interface Envelope {
+  [ENVELOPE_MARKER]: typeof ENVELOPE_VERSION
+  value?: unknown
 }
 
-function isUndefinedMarker(value: unknown): value is UndefinedMarker {
+function isEnvelope(value: unknown): value is Envelope {
   return (
     typeof value === 'object' &&
     value !== null &&
-    (value as Record<string, unknown>)[UNDEFINED_MARKER] === true
+    (value as Record<string, unknown>)[ENVELOPE_MARKER] === ENVELOPE_VERSION
   )
 }
 
 /**
- * Lets a stored `undefined` survive the round trip: Crossflight writes it as
- * a marked envelope and unwraps it on read. Any other value is passed
- * through untouched, so this only changes what Crossflight itself writes for
- * a loader that resolved `undefined`.
+ * Lets a cached `undefined` survive the round trip: every value written while
+ * the option is on goes into the reserved envelope, and reads unwrap it.
+ * Wrapping everything is what keeps the format unambiguous - a loader value
+ * that happens to look like the envelope is just a value inside one - while
+ * raw values written by a process without the option still read back as they
+ * were.
  */
 function withCachedUndefined(cache: CacheAdapter): CacheAdapter {
   return {
     async get<T>(key: string): Promise<CacheLookup<T>> {
-      const lookup = await cache.get<T | UndefinedMarker>(key)
+      const lookup = await cache.get<Envelope | T>(key)
       if (!lookup.hit) {
         return { hit: false }
       }
 
-      if (isUndefinedMarker(lookup.value)) {
-        return { hit: true, value: undefined as T }
+      if (isEnvelope(lookup.value)) {
+        // No `value` key means the loader resolved `undefined`.
+        const unwrapped =
+          'value' in lookup.value ? lookup.value.value : undefined
+        return { hit: true, value: unwrapped as T }
       }
 
       return { hit: true, value: lookup.value as T }
@@ -70,16 +79,12 @@ function withCachedUndefined(cache: CacheAdapter): CacheAdapter {
       value: T,
       options?: CacheSetOptions
     ): Promise<void> {
-      if (value === undefined) {
-        await cache.set(
-          key,
-          { [UNDEFINED_MARKER]: true } as unknown as T,
-          options
-        )
-        return
-      }
+      const envelope: Envelope =
+        value === undefined
+          ? { [ENVELOPE_MARKER]: ENVELOPE_VERSION }
+          : { [ENVELOPE_MARKER]: ENVELOPE_VERSION, value }
 
-      await cache.set(key, value, options)
+      await cache.set(key, envelope as unknown as T, options)
     },
   }
 }
