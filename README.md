@@ -157,7 +157,9 @@ Every built-in adapter reports a stored `undefined` as a miss, because that is w
 
 `cacheUndefined: true` closes that gap. While it is on, every value Crossflight writes goes into the reserved envelope `{ "__crossflight_envelope__": 1, value }` - a loader result of `undefined` is the same envelope without a `value` key - and is unwrapped on read. Wrapping every value is what makes the format unambiguous: whatever your loader returns comes back exactly as it was, including an object that looks like the envelope itself.
 
-Raw values written by a process that has the option off still read back as they were. Two processes sharing a cache, however, have to agree on the setting: an option-off process reading an enveloped value sees the envelope, not the value, and anything else reading those keys directly has to unwrap it too.
+`__crossflight_envelope__` is reserved, and only a stored value of exactly the envelope's shape is unwrapped: an application object that carries the name next to fields of its own is returned as it was stored, not decoded. Shape is the only discriminator there is, though, so a raw value that is exactly an envelope - one written before you turned the option on, or by a process that has it off - is indistinguishable from an envelope and reads back as the `value` inside it, or as `undefined` if it has none. Enabling `cacheUndefined` on a cache that already holds data therefore needs a migration: namespace or flush the keys you are reusing, because Crossflight cannot tell those values apart from its own.
+
+Raw values that are not of the reserved shape still read back as they were. Two processes sharing a cache still have to agree on the setting: an option-off process reading an enveloped value sees the envelope, not the value, and anything else reading those keys directly has to unwrap it too. An older version of Crossflight that predates the shape check unwraps any object carrying the marker, so two processes running different versions can disagree about a lookalike value.
 
 ## Errors
 

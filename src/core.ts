@@ -27,11 +27,11 @@ const MIN_RENEW_INTERVAL_MS = 25
 const MIN_LEASE_TTL_MS = 2 * MIN_RENEW_INTERVAL_MS
 
 /**
- * Envelope Crossflight writes when `cacheUndefined` is on. Every value is
- * wrapped, so a loader value can be anything - including an object that
- * looks like the envelope itself - and still come back exactly as it was:
- * only the outer layer is ever produced by Crossflight, which is what makes
- * the format unambiguous.
+ * Envelope Crossflight writes when `cacheUndefined` is on. Every value it
+ * writes is wrapped, so a loader value can be anything - including an object
+ * that looks like the envelope itself - and still come back exactly as it
+ * was: wrapping every write is what keeps Crossflight's own values
+ * unambiguous.
  */
 const ENVELOPE_MARKER = '__crossflight_envelope__'
 const ENVELOPE_VERSION = 1
@@ -41,21 +41,43 @@ interface Envelope {
   value?: unknown
 }
 
+/**
+ * Only the shape Crossflight writes counts as an envelope: the marker as an
+ * own key, and nothing beside it but `value`. A stored object that carries the
+ * reserved name next to fields of its own is application data that happens to
+ * use it, and unwrapping that would hand the caller a `value` - or an
+ * `undefined` - that was never written under the key.
+ *
+ * Shape is the only discriminator there is, so a raw value that is exactly an
+ * envelope cannot be told apart from one Crossflight wrote; see
+ * `CrossflightOptions.cacheUndefined`.
+ */
 function isEnvelope(value: unknown): value is Envelope {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    (value as Record<string, unknown>)[ENVELOPE_MARKER] !== ENVELOPE_VERSION
+  ) {
+    return false
+  }
+
+  const keys = Object.keys(value)
+
+  // An inherited marker is not a shape Crossflight wrote, and neither is any
+  // key the format does not use.
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as Record<string, unknown>)[ENVELOPE_MARKER] === ENVELOPE_VERSION
+    keys.includes(ENVELOPE_MARKER) &&
+    keys.every((key) => key === ENVELOPE_MARKER || key === 'value')
   )
 }
 
 /**
  * Lets a cached `undefined` survive the round trip: every value written while
  * the option is on goes into the reserved envelope, and reads unwrap it.
- * Wrapping everything is what keeps the format unambiguous - a loader value
- * that happens to look like the envelope is just a value inside one - while
- * raw values written by a process without the option still read back as they
- * were.
+ * Wrapping everything is what keeps Crossflight's own values unambiguous - a
+ * loader value that happens to look like the envelope is just a value inside
+ * one - while a raw value that is not exactly the envelope shape still reads
+ * back as it was.
  */
 function withCachedUndefined(cache: CacheAdapter): CacheAdapter {
   return {
