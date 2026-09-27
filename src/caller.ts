@@ -45,11 +45,9 @@ export const attachCaller = <T>(
       detachAbort = undefined
     }
 
+    // No re-entry guard is needed here: cleanup() removes both triggers before
+    // any user code runs, and each of them fires at most once.
     const cancelCaller = (reason: unknown) => {
-      if (settled) {
-        return
-      }
-
       settled = true
       cleanup()
       record.waitingCallers -= 1
