@@ -1,23 +1,8 @@
-import { spawnSync } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { composeDown, composeRun, composeUp } from './docker.js'
 
-const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-
-const run = (command, args = []) => {
-  const result = spawnSync(command, args, {
-    cwd: projectRoot,
-    stdio: 'inherit',
-    shell: true,
-  })
-  if (result.error) throw result.error
-  return result.status ?? 1
-}
-
-let exitCode = run('docker', [
-  'compose',
-  'up',
-  '-d',
+// The cluster comes up as six nodes plus the initialisation container: `up`
+// pulls their images, and the initialisation has to finish before the tests run.
+const CLUSTER_SERVICES = [
   'redis-node-1',
   'redis-node-2',
   'redis-node-3',
@@ -25,9 +10,11 @@ let exitCode = run('docker', [
   'redis-node-5',
   'redis-node-6',
   'redis-cluster-init',
-])
+]
+
+let exitCode = composeUp(CLUSTER_SERVICES)
 if (exitCode === 0) {
-  exitCode = run('docker', ['compose', 'run', '--rm', 'redis-cluster-test'])
+  exitCode = composeRun('redis-cluster-test')
 }
-const downCode = run('docker', ['compose', 'down', '--remove-orphans'])
+const downCode = composeDown()
 process.exit(exitCode === 0 ? downCode : exitCode)
