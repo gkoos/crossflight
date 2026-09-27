@@ -96,6 +96,8 @@ interface Flight {
   controller: AbortController
   /** Callers currently waiting that have not cancelled. */
   waitingCallers: number
+  /** Absolute time the whole flight gives up, or undefined for no deadline. */
+  deadlineAt?: number
 }
 
 /**
@@ -113,6 +115,7 @@ export function createCrossflight({
   coordinator,
   defaultTimeoutMs,
   defaultTtlMs = DEFAULT_TTL_MS,
+  defaultFlightDeadlineMs,
   maxRetryAttempts = DEFAULT_MAX_RETRY_ATTEMPTS,
   retryBackoff = DEFAULT_RETRY_BACKOFF,
   failureMode = 'fail-closed',
@@ -311,6 +314,17 @@ export function createCrossflight({
     options: WrapOptions = {}
   ): Promise<T> => {
     const existing = localFlights.get(key)
+
+    // A caller that arrives after the flight's deadline must not start a new
+    // flight - that is how a deadline turns into a stampede - and must not join
+    // a flight that is already winding down.
+    if (
+      existing?.deadlineAt !== undefined &&
+      Date.now() >= existing.deadlineAt
+    ) {
+      throw new CoordinationTimeoutError(key)
+    }
+
     // An aborted record is a flight that is winding down; joining it would hand
     // its caller the previous caller's cancellation reason. Start a fresh one
     // instead - the finally identity check keeps the replacement safe.
@@ -358,6 +372,21 @@ export function createCrossflight({
       waitingCallers: 1,
     }
 
+    const flightDeadlineMs = options.flightDeadlineMs ?? defaultFlightDeadlineMs
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+
+    if (flightDeadlineMs !== undefined && flightDeadlineMs > 0) {
+      record.deadlineAt = Date.now() + flightDeadlineMs
+      // The deadline is a latency budget for the whole flight rather than a
+      // coordination failure, so it aborts in every failure mode: a fail-open
+      // fallback could not run on an already aborted signal anyway.
+      deadlineTimer = setTimeout(() => {
+        record.controller.abort(new CoordinationTimeoutError(key))
+      }, flightDeadlineMs)
+      // Do not keep an exiting process alive; the timer still fires while it runs.
+      deadlineTimer.unref()
+    }
+
     const flight = (async (): Promise<T> => {
       const startedAt = Date.now()
 
@@ -366,8 +395,14 @@ export function createCrossflight({
       // another owner, so they stay out of the reported metric.
       let waitedMs = 0
 
+      // A cache read carries no signal of its own, so race it with the flight's:
+      // a stalled read must not hold the flight past its deadline. Losing the
+      // race is safe - a read has no side effects and is drained, not cancelled.
+      const readCache = (): Promise<CacheLookup<T>> =>
+        raceWithAbort(cache.get<T>(key), controller.signal)
+
       const attempt = async (): Promise<T> => {
-        const cached = await cache.get<T>(key)
+        const cached = await readCache()
         if (cached.hit) {
           emit({ type: 'hit', key, waitedMs: 0 })
           return cached.value
@@ -420,7 +455,7 @@ export function createCrossflight({
 
             attempt += 1
 
-            const retry = await cache.get<T>(key)
+            const retry = await readCache()
             if (retry.hit) {
               emit({ type: 'hit', key, waitedMs })
               return retry.value
@@ -458,7 +493,7 @@ export function createCrossflight({
         emit({ type: 'ownership_acquired', key })
 
         try {
-          const recheck = await cache.get<T>(key)
+          const recheck = await readCache()
           if (recheck.hit) {
             // Another owner filled the cache while we were acquiring, so this
             // lease protects nothing: release it rather than hold it to its TTL.
@@ -549,6 +584,12 @@ export function createCrossflight({
           // Ownership is deliberately held until the write settles: a cache
           // write has no signal, so releasing the lease early would let a
           // replacement owner publish a newer value that this late, stale
+          // write could then overwrite. The flight deadline cannot break that:
+          // its abort either fires before the ownership check above - and the
+          // flight abandons without writing - or after it, where the lease was
+          // just renewed and stays held until the write settles.
+          // write has no signal, so releasing the lease early would let a
+          // replacement owner publish a newer value that this late, stale
           // write could then overwrite.
           await cache.set(key, value, { ttl: options.ttl })
           await lease.complete()
@@ -572,6 +613,10 @@ export function createCrossflight({
         emit({ type: 'failed', key, error })
         throw error
       } finally {
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer)
+        }
+
         // Only remove our own record: a caller that found it aborted may have
         // replaced it with a fresh flight for the same key.
         if (localFlights.get(key) === record) {

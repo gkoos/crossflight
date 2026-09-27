@@ -52,6 +52,8 @@ export interface WrapOptions {
   ttl?: number
   /** Lease TTL for this call; defaults to `defaultTtlMs`. */
   leaseTtlMs?: number
+  /** Whole-flight deadline for this call; defaults to `defaultFlightDeadlineMs`. */
+  flightDeadlineMs?: number
   signal?: AbortSignal
   timeoutMs?: number
   failureMode?: CoordinationFailureMode
@@ -78,6 +80,21 @@ export interface CrossflightOptions {
   maxRetryAttempts?: number
   retryBackoff?: (attempt: number) => number
   failureMode?: CoordinationFailureMode
+  /**
+   * Whole-flight deadline in ms, measured from the moment the flight is
+   * created. When it passes the flight is aborted: callers waiting on it reject
+   * with `CoordinationTimeoutError`, the owner abandons its lease, and a caller
+   * that arrives afterwards is rejected at once instead of starting a new
+   * flight. The call that creates a flight decides the budget its joiners
+   * inherit, and it applies in every failure mode - a `fail-open` fallback
+   * could not run on an already aborted signal anyway. Reads are raced with the
+   * flight's signal, so a stalled read is bounded as well; the cache write is
+   * the one step that cannot be interrupted and is allowed to finish.
+   *
+   * Unset means the flight has no deadline and each caller's own `timeoutMs` is
+   * the only bound.
+   */
+  defaultFlightDeadlineMs?: number
   onEvent?: (event: CrossflightEvent) => void
   onEventError?: (error: unknown) => void
   /**
