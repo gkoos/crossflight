@@ -1,11 +1,19 @@
 name: CI
-on: [push, pull_request]
+
+# `push` is limited to main, as CodeQL already is: a branch with a pull request
+# open would otherwise get a push run and a pull_request run for the same commit,
+# testing the same tree twice. The pull request run covers the branch while it is
+# open, the push run covers the commits that land.
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions: read-all
 
-# A branch with a pull request open gets a push run and a pull_request run for
-# the same commit. They test the same tree, so the older one is cancelled instead
-# of finishing - which also keeps a superseded commit from failing the branch
+# Within each stream the older run is cancelled: successive pushes to one pull
+# request share the `refs/pull/<number>/merge` ref, and successive pushes to main
+# share `refs/heads/main`, so a superseded commit cannot keep the branch red
 # after it has been fixed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
