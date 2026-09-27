@@ -69,6 +69,16 @@ export type Loader<T> = (signal: AbortSignal) => Promise<T> | T
 
 export interface Crossflight {
   wrap<T>(key: string, loader: Loader<T>, options?: WrapOptions): Promise<T>
+  /**
+   * Aborts every in-flight flight and closes the coordinator. The instance is
+   * marked closed before the flights are aborted, so a `wrap()` that lands
+   * while the coordinator is still shutting down rejects as well.
+   *
+   * A closed instance rejects every later `wrap()` with
+   * `CoordinationClosedError`: it serves no cache hit and runs no loader, in
+   * either failure mode, because ownership can no longer be coordinated.
+   * Closing is idempotent.
+   */
   close(): Promise<void>
 }
 
