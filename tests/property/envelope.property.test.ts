@@ -30,9 +30,17 @@ const aside = <Ts>(arbitrary: fc.Arbitrary<Ts>): fc.Arbitrary<unknown> =>
 /**
  * `oneof` over widened arbitraries: each branch narrows to the same union, which
  * the caller names because fast-check cannot infer it from unlike branches.
+ *
+ * The rest parameter is a tuple of at least two branches: fast-check's own
+ * signature accepts any array, so the tuple is what keeps a single branch from
+ * being written as a `oneof`, which is only a longer spelling of that branch.
  */
 const oneOf = <Ts>(
-  ...arbitraries: Array<fc.Arbitrary<unknown>>
+  ...arbitraries: [
+    fc.Arbitrary<unknown>,
+    fc.Arbitrary<unknown>,
+    ...Array<fc.Arbitrary<unknown>>,
+  ]
 ): fc.Arbitrary<Ts> => fc.oneof(...arbitraries) as fc.Arbitrary<Ts>
 
 /** The exact envelopes Crossflight writes, plus values that merely resemble one. */
