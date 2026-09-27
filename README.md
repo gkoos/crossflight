@@ -104,6 +104,8 @@ import { keyvAdapter }         from 'crossflight/adapters/keyv'
 import { cacheableAdapter }    from 'crossflight/adapters/cacheable'
 ```
 
+Each adapter takes the library's own instance. The value the cache's `set()` resolves is ignored, so cache-manager's stored value and the booleans Cacheable and Keyv return all fit without a cast.
+
 If your cache library is not on that list, the interface is two methods:
 
 ```ts

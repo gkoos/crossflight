@@ -2,7 +2,12 @@ import type { CacheAdapter, CacheLookup, CacheSetOptions } from '../types.js'
 
 export interface CacheableLike {
   get<T>(key: string): Promise<T | undefined>
-  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<void>
+  /**
+   * Cacheable resolves a boolean that says whether the value was stored, so its
+   * `set` is not a `Promise<void>`. The value is ignored here: accept whatever
+   * it resolves.
+   */
+  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<unknown>
 }
 
 export function cacheableAdapter(cache: CacheableLike): CacheAdapter {

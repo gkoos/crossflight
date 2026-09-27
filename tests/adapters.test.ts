@@ -1,3 +1,5 @@
+import { createCache } from 'cache-manager'
+import { Cacheable } from 'cacheable'
 import Keyv from 'keyv'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -122,6 +124,70 @@ describe('cache adapters', () => {
 
     await new Promise(resolve => setTimeout(resolve, 40))
     await expect(adapter.get<string>('delta')).resolves.toEqual({
+      hit: true,
+      value: 'value',
+    })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+  })
+
+  it('adapts a real cache-manager cache and applies the requested TTL', async () => {
+    const cache = createCache({ stores: [new Keyv()] })
+    const adapter = cacheManagerAdapter(cache)
+    const setSpy = vi.spyOn(cache, 'set')
+
+    await adapter.set('theta', 42, { ttl: 30 })
+    expect(setSpy).toHaveBeenCalledWith('theta', 42, 30)
+
+    await expect(adapter.get<number>('theta')).resolves.toEqual({
+      hit: true,
+      value: 42,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 90))
+    await expect(adapter.get<number>('theta')).resolves.toEqual({ hit: false })
+
+    setSpy.mockRestore()
+  })
+
+  it('adapts a real cache-manager cache — set without TTL', async () => {
+    const cache = createCache({ stores: [new Keyv()] })
+    const adapter = cacheManagerAdapter(cache)
+
+    await adapter.set('iota', 'value')
+
+    await expect(adapter.get<string>('iota')).resolves.toEqual({
+      hit: true,
+      value: 'value',
+    })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
+  })
+
+  it('adapts a real Cacheable instance and applies the requested TTL', async () => {
+    const cache = new Cacheable()
+    const adapter = cacheableAdapter(cache)
+    const setSpy = vi.spyOn(cache, 'set')
+
+    await adapter.set('kappa', 42, { ttl: 30 })
+    expect(setSpy).toHaveBeenCalledWith('kappa', 42, 30)
+
+    await expect(adapter.get<number>('kappa')).resolves.toEqual({
+      hit: true,
+      value: 42,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 90))
+    await expect(adapter.get<number>('kappa')).resolves.toEqual({ hit: false })
+
+    setSpy.mockRestore()
+  })
+
+  it('adapts a real Cacheable instance — set without TTL', async () => {
+    const cache = new Cacheable()
+    const adapter = cacheableAdapter(cache)
+
+    await adapter.set('lambda', 'value')
+
+    await expect(adapter.get<string>('lambda')).resolves.toEqual({
       hit: true,
       value: 'value',
     })

@@ -2,7 +2,11 @@ import type { CacheAdapter, CacheLookup, CacheSetOptions } from '../types.js'
 
 export interface CacheManagerLike {
   get<T>(key: string): Promise<T | undefined>
-  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<void>
+  /**
+   * cache-manager resolves the value it stored, so its `set` is not a
+   * `Promise<void>`. The value is ignored here: accept whatever it resolves.
+   */
+  set<T>(key: string, value: T, ttl?: number | CacheSetOptions): Promise<unknown>
 }
 
 export function cacheManagerAdapter(cache: CacheManagerLike): CacheAdapter {
