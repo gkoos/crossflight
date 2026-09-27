@@ -1943,6 +1943,171 @@ describe('crossflight core', () => {
 
       await crossflight.close()
     })
+
+    it('does not publish when the abort lands in the pre-write ownership check', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(0)
+      const acquire = coordinator.acquire.bind(coordinator)
+
+      coordinator.acquire = async (key, options) => {
+        const lease = await acquire(key, options)
+        if (!lease) {
+          return lease
+        }
+
+        return {
+          key: lease.key,
+          renew: async () => {
+            // Slow enough for the caller to give up while the pre-write
+            // ownership check is in flight.
+            await sleep(150)
+            return true
+          },
+          complete: () => lease.complete(),
+          abandon: () => lease.abandon(),
+        }
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await expect(
+        crossflight.wrap('slow:renew:key', async () => 'value', {
+          leaseTtlMs: 600,
+          timeoutMs: 50,
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      // The value never reached the cache.
+      expect(cache.values.has('slow:renew:key')).toBe(false)
+
+      await crossflight.close()
+    })
+
+    it('stops renewing once the flight has been abandoned', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(0)
+      const acquire = coordinator.acquire.bind(coordinator)
+      let renewCalls = 0
+
+      coordinator.acquire = async (key, options) => {
+        const lease = await acquire(key, options)
+        if (!lease) {
+          return lease
+        }
+
+        return {
+          key: lease.key,
+          renew: async () => {
+            renewCalls += 1
+            // A slow renewal, so the caller cancels while it is in flight.
+            await sleep(120)
+            return true
+          },
+          complete: () => lease.complete(),
+          abandon: () => lease.abandon(),
+        }
+      }
+
+      const crossflight = createCrossflight({ cache, coordinator })
+
+      await expect(
+        crossflight.wrap(
+          'slow:periodic:key',
+          () => new Promise<string>(() => undefined),
+          { leaseTtlMs: 60, timeoutMs: 130 }
+        )
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      await sleep(150)
+      // The drained renewal does not schedule another one.
+      expect(renewCalls).toBe(1)
+      expect(coordinator.owners.has('slow:periodic:key')).toBe(false)
+
+      await crossflight.close()
+    })
+
+    it('releases the lease when an abandoned loader ignores the abort', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(0)
+      const crossflight = createCrossflight({ cache, coordinator })
+      let loaderSignal: AbortSignal | undefined
+
+      const hung = crossflight.wrap(
+        'hung:loader:key',
+        signal => {
+          loaderSignal = signal
+          // Ignores the abort entirely.
+          return new Promise<string>(() => undefined)
+        },
+        { leaseTtlMs: 60, timeoutMs: 100 }
+      )
+
+      await expect(hung).rejects.toBeInstanceOf(CoordinationTimeoutError)
+      expect(loaderSignal?.aborted).toBe(true)
+
+      // Let the abandoned flight finish tearing down.
+      await sleep(200)
+      expect(coordinator.owners.has('hung:loader:key')).toBe(false)
+      await expect(
+        coordinator.acquire('hung:loader:key', { ttlMs: 60 })
+      ).resolves.not.toBeNull()
+
+      await crossflight.close()
+    })
+
+    it('does not report a drained renewal as an ownership loss', async () => {
+      const coordinator = new InMemoryCoordinator()
+      const cache = slowWriteCache(100)
+      const events: unknown[] = []
+      let renewalsInFlight = 0
+      let releasedWithRenewalInFlight = false
+      const acquire = coordinator.acquire.bind(coordinator)
+      let renewCalls = 0
+
+      coordinator.acquire = async (key, options) => {
+        const lease = await acquire(key, options)
+        if (!lease) {
+          return lease
+        }
+
+        return {
+          key: lease.key,
+          renew: async () => {
+            renewCalls += 1
+            renewalsInFlight += 1
+            // Still in flight when the publication completes.
+            await sleep(150)
+            renewalsInFlight -= 1
+            return true
+          },
+          complete: async () => {
+            releasedWithRenewalInFlight = renewalsInFlight > 0
+            await lease.complete()
+          },
+          abandon: () => lease.abandon(),
+        }
+      }
+
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('slow:drain:key', async () => 'value', { leaseTtlMs: 60 })
+      ).resolves.toBe('value')
+
+      expect(renewCalls).toBeGreaterThan(0)
+      // Renewal is drained before the lease is released, so it cannot observe
+      // the completed lease and report a spurious ownership loss.
+      expect(releasedWithRenewalInFlight).toBe(false)
+      expect(
+        events.filter(event => (event as { type: string }).type === 'failed')
+      ).toHaveLength(0)
+
+      await crossflight.close()
+    })
   })
 
   describe('failed event deduplication', () => {

@@ -570,6 +570,8 @@ export function createCrossflight({
           try {
             value = await runLoader(loader, controller.signal)
 
+            // Defensive: a renewal failure that landed between the loader
+            // settling and this check must stop the publication.
             if (renewalError) {
               throw renewalError
             }
@@ -591,6 +593,12 @@ export function createCrossflight({
             }
 
             await cache.set(key, value, { ttl: options.ttl })
+
+            // Drain renewal before releasing the lease: a renewal that is
+            // still in flight would otherwise observe the completed lease,
+            // report ownership lost, and turn a successful publication into a
+            // failed one.
+            await stopRenewal()
             await lease.complete()
           } finally {
             await stopRenewal()
