@@ -172,9 +172,27 @@ export class RedisCoordinator implements Coordinator {
   private readonly subscribedChannels = new Set<string>()
   private readonly subscriptionClient: IORedis
   private closed = false
-  private disconnected = false
-  private readonly handleClientDisconnect = () => {
-    this.disconnected = true
+  private commandEnded = false
+  private commandReconnecting = false
+  private subscriptionEnded = false
+  private subscriptionReconnecting = false
+  private readonly handleCommandError = () => {
+    this.commandReconnecting = true
+  }
+  private readonly handleCommandReady = () => {
+    this.commandReconnecting = false
+  }
+  private readonly handleCommandEnd = () => {
+    this.commandEnded = true
+  }
+  private readonly handleSubscriptionError = () => {
+    this.subscriptionReconnecting = true
+  }
+  private readonly handleSubscriptionReady = () => {
+    this.subscriptionReconnecting = false
+  }
+  private readonly handleSubscriptionEnd = () => {
+    this.subscriptionEnded = true
   }
 
   constructor(
@@ -186,10 +204,12 @@ export class RedisCoordinator implements Coordinator {
     this.commandTimeoutMs = options.commandTimeoutMs
     this.subscriptionClient = new IORedis(client.options)
 
-    this.client.on('error', this.handleClientDisconnect)
-    this.client.on('end', this.handleClientDisconnect)
-    this.subscriptionClient.on('error', this.handleClientDisconnect)
-    this.subscriptionClient.on('end', this.handleClientDisconnect)
+    this.client.on('error', this.handleCommandError)
+    this.client.on('ready', this.handleCommandReady)
+    this.client.on('end', this.handleCommandEnd)
+    this.subscriptionClient.on('error', this.handleSubscriptionError)
+    this.subscriptionClient.on('ready', this.handleSubscriptionReady)
+    this.subscriptionClient.on('end', this.handleSubscriptionEnd)
   }
 
   private resolveLeaseKey(key: string): string {
@@ -200,13 +220,46 @@ export class RedisCoordinator implements Coordinator {
     return `${this.namespace}:change:${this.hashKey(key)}`
   }
 
+  /**
+   * A connection is unusable while it is closed, and stays unusable after a
+   * connection error only until the client reports itself ready again. A
+   * transient error therefore never disables the coordinator permanently.
+   */
+  private static unavailable(
+    status: string,
+    ended: boolean,
+    reconnecting: boolean
+  ): boolean {
+    return (
+      ended ||
+      status === 'close' ||
+      status === 'end' ||
+      (reconnecting && status !== 'ready')
+    )
+  }
+
   private assertOpen(): void {
-    if (this.closed || this.disconnected) {
+    if (
+      this.closed ||
+      RedisCoordinator.unavailable(
+        this.client.status,
+        this.commandEnded,
+        this.commandReconnecting
+      )
+    ) {
       throw new Error('Redis coordinator is closed')
     }
+  }
 
-    if (this.client.status === 'close' || this.client.status === 'end') {
-      this.disconnected = true
+  private assertSubscribable(): void {
+    if (
+      this.closed ||
+      RedisCoordinator.unavailable(
+        this.subscriptionClient.status,
+        this.subscriptionEnded,
+        this.subscriptionReconnecting
+      )
+    ) {
       throw new Error('Redis coordinator is closed')
     }
   }
@@ -214,7 +267,6 @@ export class RedisCoordinator implements Coordinator {
   private handleClosedRedisError(error: unknown): never | void {
     const message = error instanceof Error ? error.message : String(error)
     if (isClosedConnectionMessage(message)) {
-      this.disconnected = true
       throw new Error('Redis coordinator is closed')
     }
   }
@@ -273,6 +325,7 @@ export class RedisCoordinator implements Coordinator {
 
   async waitForChange(key: string, options?: WaitOptions): Promise<void> {
     this.assertOpen()
+    this.assertSubscribable()
 
     const timeoutMs = options?.timeoutMs ?? 100
     const signal = options?.signal
@@ -346,12 +399,13 @@ export class RedisCoordinator implements Coordinator {
     }
 
     this.closed = true
-    this.disconnected = true
 
-    this.client.off('error', this.handleClientDisconnect)
-    this.client.off('end', this.handleClientDisconnect)
-    this.subscriptionClient.off('error', this.handleClientDisconnect)
-    this.subscriptionClient.off('end', this.handleClientDisconnect)
+    this.client.off('error', this.handleCommandError)
+    this.client.off('ready', this.handleCommandReady)
+    this.client.off('end', this.handleCommandEnd)
+    this.subscriptionClient.off('error', this.handleSubscriptionError)
+    this.subscriptionClient.off('ready', this.handleSubscriptionReady)
+    this.subscriptionClient.off('end', this.handleSubscriptionEnd)
 
     for (const channel of [...this.subscribedChannels]) {
       this.subscribedChannels.delete(channel)

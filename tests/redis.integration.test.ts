@@ -390,6 +390,54 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
     await client.quit()
   })
 
+  it('recovers after a transient client error once the client reports ready', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+
+    Object.defineProperty(client, 'status', {
+      configurable: true,
+      value: 'reconnecting',
+    })
+    client.emit('error', new Error('transient blip'))
+
+    await expect(coordinator.acquire('redis:recover:key', { ttlMs: 500 })).rejects.toThrow(/closed/i)
+
+    Object.defineProperty(client, 'status', {
+      configurable: true,
+      value: 'ready',
+    })
+    client.emit('ready')
+
+    const lease = await coordinator.acquire('redis:recover:key', { ttlMs: 500 })
+    expect(lease).not.toBeNull()
+    await lease!.abandon()
+
+    await coordinator.close()
+    client.disconnect()
+  })
+
+  it('keeps acquire available when the subscription connection is broken', async () => {
+    const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
+    const coordinator = redisCoordinator(client)
+    const internals = coordinator as unknown as RedisCoordinatorTestInternals
+
+    // A broken subscription connection blocks waiting...
+    internals.subscriptionClient.emit('error', new Error('subscription blip'))
+    internals.subscriptionClient.emit('end')
+
+    await expect(
+      coordinator.waitForChange('redis:sub:decoupled', { timeoutMs: 50 })
+    ).rejects.toThrow(/closed/i)
+
+    // ...but acquire uses the command connection, which is still healthy.
+    const lease = await coordinator.acquire('redis:sub:decoupled', { ttlMs: 500 })
+    expect(lease).not.toBeNull()
+    await lease!.abandon()
+
+    await coordinator.close()
+    await client.quit()
+  })
+
   it('does not mask non-closed acquire errors that only mention connection', async () => {
     const client = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379')
     const coordinator = redisCoordinator(client)
