@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import Keyv from 'keyv'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   cacheManagerAdapter,
@@ -89,26 +90,41 @@ describe('cache adapters', () => {
     expect(setCalls[0][2]).toBe(3000)
   })
 
-  it('adapts a Keyv cache instance', async () => {
-    const values = new Map<string, unknown>()
-    const adapter = keyvAdapter({
-      async get<T>(key: string): Promise<T | undefined> {
-        return values.get(key) as T | undefined
-      },
-      async set<T>(key: string, value: T, options?: { ttl?: number }): Promise<void> {
-        values.set(key, value)
-        void options
-      },
-      async delete(key: string): Promise<boolean> {
-        return values.delete(key)
-      },
-    })
+  it('adapts a real Keyv instance and applies the requested TTL', async () => {
+    const keyv = new Keyv<number>()
+    const adapter = keyvAdapter(keyv)
+    const setSpy = vi.spyOn(keyv, 'set')
 
-    await adapter.set('gamma', 42, { ttl: 1000 })
+    await adapter.set('gamma', 42, { ttl: 30 })
+    expect(setSpy).toHaveBeenCalledWith('gamma', 42, 30)
+
     await expect(adapter.get<number>('gamma')).resolves.toEqual({
       hit: true,
       value: 42,
     })
-    await expect(adapter.get<number>('missing')).resolves.toEqual({ hit: false })
+
+    await new Promise(resolve => setTimeout(resolve, 90))
+    await expect(adapter.get<number>('gamma')).resolves.toEqual({ hit: false })
+
+    setSpy.mockRestore()
+  })
+
+  it('adapts a real Keyv instance — set without TTL', async () => {
+    const keyv = new Keyv()
+    const adapter = keyvAdapter(keyv)
+
+    await adapter.set('delta', 'value')
+
+    await expect(adapter.get<string>('delta')).resolves.toEqual({
+      hit: true,
+      value: 'value',
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 40))
+    await expect(adapter.get<string>('delta')).resolves.toEqual({
+      hit: true,
+      value: 'value',
+    })
+    await expect(adapter.get<string>('missing')).resolves.toEqual({ hit: false })
   })
 })
