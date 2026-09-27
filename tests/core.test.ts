@@ -1044,6 +1044,199 @@ describe('crossflight core', () => {
     await crossflight.close()
   })
 
+  describe('operational events', () => {
+    interface ObservedEvent {
+      type: string
+      key: string
+      reason?: unknown
+      attempts?: number
+      waitedMs?: number
+    }
+
+    const findEvent = (events: unknown[], type: string): ObservedEvent => {
+      const found = events.find(
+        event => (event as ObservedEvent).type === type
+      ) as ObservedEvent | undefined
+
+      if (!found) {
+        throw new Error(`expected a ${type} event`)
+      }
+
+      return found
+    }
+
+    it('emits cancelled when a caller ends its own wait', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange(_key: string, options?: { signal?: AbortSignal }) {
+          const signal = options?.signal
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            })
+          })
+        },
+        async close() {},
+      }
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:cancelled', async () => 'value', {
+          timeoutMs: 30,
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      const cancelled = findEvent(events, 'cancelled')
+      expect(cancelled.key).toBe('events:cancelled')
+      expect(cancelled.reason).toBeInstanceOf(CoordinationTimeoutError)
+
+      await crossflight.close()
+    })
+
+    it('emits fallback when fail-open runs the loader without the lease', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          throw new Error('coordinator down')
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        failureMode: 'fail-open',
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:fallback', async () => 'value')
+      ).resolves.toBe('value')
+
+      const fallback = findEvent(events, 'fallback')
+      expect(fallback.key).toBe('events:fallback')
+      expect((fallback.reason as Error).message).toBe('coordinator down')
+
+      await crossflight.close()
+    })
+
+    it('emits wait_exhausted when the retry budget runs out while contended', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        maxRetryAttempts: 3,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:exhausted', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      const exhausted = findEvent(events, 'wait_exhausted')
+      expect(exhausted.key).toBe('events:exhausted')
+      expect(exhausted.attempts).toBe(3)
+
+      await crossflight.close()
+    })
+
+    it('reports the distributed wait in waitedMs on a retry hit', async () => {
+      const cache = new MemoryCache()
+      const coordinator = {
+        async acquire() {
+          return null
+        },
+        async waitForChange(key: string) {
+          await new Promise(resolve => setTimeout(resolve, 30))
+          await cache.set(key, 'other-owner-value')
+        },
+        async close() {},
+      }
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:retry-hit', async () => 'value')
+      ).resolves.toBe('other-owner-value')
+
+      const hit = findEvent(events, 'hit')
+      expect(hit.waitedMs).toBeGreaterThanOrEqual(25)
+
+      await crossflight.close()
+    })
+
+    it('reports the pre-load wait on completed and zero on a first-read hit', async () => {
+      const cache = new MemoryCache()
+      let acquireCalls = 0
+      const coordinator = {
+        async acquire(key: string) {
+          acquireCalls += 1
+          if (acquireCalls === 1) {
+            return null
+          }
+
+          return {
+            key,
+            async renew() {
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {
+          await new Promise(resolve => setTimeout(resolve, 30))
+        },
+        async close() {},
+      }
+      const events: unknown[] = []
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        onEvent: event => events.push(event),
+      })
+
+      await expect(
+        crossflight.wrap('events:completed-wait', async () => 'value')
+      ).resolves.toBe('value')
+      await expect(
+        crossflight.wrap('events:completed-wait', async () => 'value')
+      ).resolves.toBe('value')
+
+      const completed = findEvent(events, 'completed')
+      const hits = events.filter(
+        event => (event as ObservedEvent).type === 'hit'
+      ) as ObservedEvent[]
+
+      expect(completed.waitedMs).toBeGreaterThanOrEqual(25)
+      expect(hits).toHaveLength(1)
+      expect(hits[0]?.waitedMs).toBe(0)
+
+      await crossflight.close()
+    })
+  })
+
   describe('failed event deduplication', () => {
     type ObservedEvent = { type: string; key?: string; error?: unknown }
 

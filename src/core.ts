@@ -40,7 +40,7 @@ interface Flight {
 type LeaseAcquire =
   | { kind: 'acquired'; lease: Lease }
   | { kind: 'contended' }
-  | { kind: 'failed' }
+  | { kind: 'failed'; error: unknown }
 
 export function createCrossflight({
   cache,
@@ -178,6 +178,7 @@ export function createCrossflight({
         settled = true
         cleanup()
         record.waitingCallers -= 1
+        emit({ type: 'cancelled', key, reason })
 
         // This caller always settles with its own reason at once; the aborted
         // flight stops waiting for its loader and reports its own failure.
@@ -274,7 +275,7 @@ export function createCrossflight({
           // The error does not propagate, so report it here; every throw path
           // is reported once by the outer catch.
           emit({ type: 'failed', key, error })
-          return { kind: 'failed' }
+          return { kind: 'failed', error }
         }
         throw error
       }
@@ -293,7 +294,7 @@ export function createCrossflight({
       const attempt = async (): Promise<T> => {
         const cached = await cache.get<T>(key)
         if (cached.hit) {
-          emit({ type: 'hit', key })
+          emit({ type: 'hit', key, waitedMs: 0 })
           return cached.value
         }
 
@@ -304,6 +305,7 @@ export function createCrossflight({
         if (acquired.kind === 'failed') {
           // Coordination failed and fail-open is on: this is the only outcome
           // that runs the loader without joining the distributed wait.
+          emit({ type: 'fallback', key, reason: acquired.error })
           return await runLoader(loader, controller.signal)
         }
 
@@ -328,6 +330,7 @@ export function createCrossflight({
               if (effectiveFailureMode === 'fail-open') {
                 // The wait itself failed: report it and fall back.
                 emit({ type: 'failed', key, error })
+                emit({ type: 'fallback', key, reason: error })
                 return await runLoader(loader, controller.signal)
               }
 
@@ -338,12 +341,13 @@ export function createCrossflight({
 
             const retry = await cache.get<T>(key)
             if (retry.hit) {
-              emit({ type: 'hit', key })
+              emit({ type: 'hit', key, waitedMs: Date.now() - startedAt })
               return retry.value
             }
 
             const reacquired = await acquireLease()
             if (reacquired.kind === 'failed') {
+              emit({ type: 'fallback', key, reason: reacquired.error })
               return await runLoader(loader, controller.signal)
             }
 
@@ -354,11 +358,14 @@ export function createCrossflight({
           }
 
           if (!lease) {
+            // The retry budget ran out while the lease stayed contended.
+            emit({ type: 'wait_exhausted', key, attempts: maxRetryAttempts })
+
             if (effectiveFailureMode === 'fail-open') {
-              // The retry budget ran out while the lease stayed contended:
-              // report it and fall back to running the loader.
+              // Report it and fall back to running the loader.
               const timeoutError = new CoordinationTimeoutError(key)
               emit({ type: 'failed', key, error: timeoutError })
+              emit({ type: 'fallback', key, reason: timeoutError })
               return await runLoader(loader, controller.signal)
             }
 
@@ -375,7 +382,7 @@ export function createCrossflight({
             // Another owner filled the cache while we were acquiring, so this
             // lease protects nothing: release it rather than hold it to its TTL.
             await lease.abandon().catch(() => undefined)
-            emit({ type: 'hit', key })
+            emit({ type: 'hit', key, waitedMs: Date.now() - startedAt })
             return recheck.value
           }
 
@@ -431,6 +438,7 @@ export function createCrossflight({
 
           scheduleRenewal()
 
+          const loadStartedAt = Date.now()
           let value: T
           try {
             value = await runLoader(loader, controller.signal)
@@ -464,7 +472,12 @@ export function createCrossflight({
           // write could then overwrite.
           await cache.set(key, value, { ttl: options.ttl })
           await lease.complete()
-          emit({ type: 'completed', key, durationMs: Date.now() - startedAt })
+          emit({
+            type: 'completed',
+            key,
+            durationMs: Date.now() - startedAt,
+            waitedMs: loadStartedAt - startedAt,
+          })
           return value
         } catch (error) {
           await lease.abandon().catch(() => undefined)
