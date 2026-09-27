@@ -610,7 +610,12 @@ export function createCrossflight({
           try {
             value = await runLoader(loader, controller.signal)
 
-            const stillOwner = await lease.renew()
+            // Raced like every other coordination await: a renewal the
+            // coordinator never answers must not outlive the deadline.
+            const stillOwner = await raceWithAbort(
+              lease.renew(),
+              controller.signal
+            )
 
             if (!stillOwner) {
               const ownershipLost = new OwnershipLostError(key)
@@ -622,9 +627,9 @@ export function createCrossflight({
               return attempt()
             }
 
-            if (controller.signal.aborted) {
-              throw controller.signal.reason
-            }
+            // The renewal above is raced with the flight signal, so an abort
+            // while it is in flight already stops the publication; the cache
+            // write itself is the one step that cannot be interrupted.
 
             await cache.set(key, value, { ttl: options.ttl })
 

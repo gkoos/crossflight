@@ -1983,6 +1983,75 @@ describe('crossflight core', () => {
 
       await expect(call).rejects.toBeInstanceOf(CoordinationClosedError)
     })
+
+    it('rejects its callers at the deadline while the renewal after the loader hangs', async () => {
+      const cache = slowWriteCache(0)
+      const coordinator = {
+        async acquire(key: string) {
+          return {
+            key,
+            async renew() {
+              await new Promise(() => {})
+              return true
+            },
+            async complete() {},
+            async abandon() {},
+          }
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      const startedAt = Date.now()
+
+      // The lease TTL keeps the periodic renewal out of the picture, so the
+      // only renewal is the one the owner runs once the loader returns.
+      await expect(
+        crossflight.wrap('deadline:post-renew-hang', async () => 'value', {
+          leaseTtlMs: 5000,
+        })
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      expect(Date.now() - startedAt).toBeLessThan(120)
+
+      await crossflight.close()
+    })
+
+    it('ignores a contended acquisition that lands after the deadline', async () => {
+      const cache = slowWriteCache(0)
+      let acquireCalls = 0
+      const coordinator = {
+        async acquire() {
+          acquireCalls += 1
+          await new Promise(resolve => setTimeout(resolve, 100))
+
+          return null
+        },
+        async waitForChange() {},
+        async close() {},
+      }
+      const crossflight = createCrossflight({
+        cache,
+        coordinator,
+        defaultFlightDeadlineMs: 30,
+      })
+
+      await expect(
+        crossflight.wrap('deadline:late-contended', async () => 'value')
+      ).rejects.toBeInstanceOf(CoordinationTimeoutError)
+
+      // The late answer is a miss, so there is no lease to release and no
+      // retry to start: the flight is already gone.
+      await new Promise(resolve => setTimeout(resolve, 120))
+      expect(acquireCalls).toBe(1)
+
+      await crossflight.close()
+    })
   })
 
   describe('publication ownership', () => {
@@ -2126,7 +2195,7 @@ describe('crossflight core', () => {
       await crossflight.close()
     })
 
-    it('does not publish when the abort lands in the pre-write ownership check', async () => {
+    it('does not publish when the caller gives up while the pre-write renewal is in flight', async () => {
       const coordinator = new InMemoryCoordinator()
       const cache = slowWriteCache(0)
       const acquire = coordinator.acquire.bind(coordinator)
