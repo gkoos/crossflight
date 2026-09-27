@@ -4,7 +4,12 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['tests/**/*.test.ts', 'tests/**/*.integration.test.ts'],
+    include: [
+      'tests/**/*.test.ts',
+      'tests/**/*.integration.test.ts',
+      'tests/property/**/*.test.ts',
+      'tests/fuzz/**/*.test.ts',
+    ],
     exclude: ['tests/**/*cluster*'],
     testTimeout: 30000,
     coverage: {

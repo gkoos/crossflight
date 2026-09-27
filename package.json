@@ -71,8 +71,12 @@
     "format:check": "prettier --check src tests benchmarks scripts \"*.config.*\"",
     "test": "npm run test:unit && npm run test:integration && npm run test:integration:cluster",
     "test:unit": "vitest run --config vitest.config.ts",
+    "test:property": "vitest run --config vitest.generated.config.ts tests/property",
+    "test:generated": "vitest run --config vitest.generated.config.ts",
     "test:unit:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:integration:coverage": "vitest run --config vitest.integration.config.ts --coverage",
+    "test:integration": "node --no-deprecation ./scripts/test-integration.js",
+    "test:integration:cluster": "node --no-deprecation ./scripts/test-integration-cluster.js",
     "coverage": "node --no-deprecation ./scripts/coverage.js",
     "test:ci": "node --no-deprecation ./scripts/coverage.js",
     "prepublishOnly": "npm run build && npm run test:ci",
@@ -81,9 +85,7 @@
     "docker:up": "docker compose up -d redis",
     "docker:up:cluster": "docker compose up -d redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6 redis-cluster-init",
     "docker:down": "docker compose down --remove-orphans",
-    "benchmark": "node --no-deprecation ./scripts/benchmark.js",
-    "test:integration": "node --no-deprecation ./scripts/test-integration.js",
-    "test:integration:cluster": "node --no-deprecation ./scripts/test-integration-cluster.js"
+    "benchmark": "node --no-deprecation ./scripts/benchmark.js"
   },
   "peerDependencies": {
     "ioredis": "^5.0.0"
@@ -107,6 +109,7 @@
     "cacheable": "^2.5.0",
     "cross-env": "^10.1.0",
     "eslint": "^10.4.1",
+    "fast-check": "^4.10.2",
     "ioredis": "^6.0.0",
     "keyv": "^5.6.0",
     "prettier": "^3.6.2",
