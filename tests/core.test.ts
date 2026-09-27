@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { getEventListeners } from 'node:events'
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -1852,6 +1853,29 @@ describe('crossflight core', () => {
       const failed = failedEvents(events)
       expect(failed).toHaveLength(1)
       expect(failed[0]!.error).toBeInstanceOf(CoordinationClosedError)
+    })
+
+    it('releases the caller abort listener and timeout timer when the call completes', async () => {
+      vi.useFakeTimers()
+
+      try {
+        const cache = new MemoryCache()
+        const coordinator = new InMemoryCoordinator()
+        const crossflight = createCrossflight({ cache, coordinator })
+        const controller = new AbortController()
+
+        await crossflight.wrap('resources:key', async () => 'value', {
+          signal: controller.signal,
+          timeoutMs: 1000,
+        })
+
+        expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+        expect(vi.getTimerCount()).toBe(0)
+
+        await crossflight.close()
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

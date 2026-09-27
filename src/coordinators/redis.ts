@@ -172,6 +172,7 @@ export class RedisCoordinator implements Coordinator {
   private readonly hashKey: (key: string) => string
   private readonly commandTimeoutMs?: number
   private readonly subscribedChannels = new Set<string>()
+  private readonly channelWaiters = new Map<string, number>()
   private readonly subscriptionClient: IORedis
   private closed = false
   private commandEnded = false
@@ -266,6 +267,43 @@ export class RedisCoordinator implements Coordinator {
     }
   }
 
+  /** Counts the live waiters per channel: a channel is subscribed for them. */
+  private claimChannel(channel: string): void {
+    this.channelWaiters.set(
+      channel,
+      (this.channelWaiters.get(channel) ?? 0) + 1
+    )
+  }
+
+  /**
+   * Releases one waiter's claim. The subscription itself is only dropped once
+   * the last waiter leaves and the channel is actually subscribed, so a claim
+   * that is still subscribing is never torn down.
+   */
+  private releaseWaiter(channel: string): void {
+    // A claim always exists here: cleanup() only runs for a waiter that claimed,
+    // and the entry is only removed in this method.
+    const waiters = this.channelWaiters.get(channel)!
+    if (waiters > 1) {
+      this.channelWaiters.set(channel, waiters - 1)
+      return
+    }
+
+    this.channelWaiters.delete(channel)
+    if (this.subscribedChannels.has(channel)) {
+      this.unsubscribeIdleChannel(channel)
+    }
+  }
+
+  private unsubscribeIdleChannel(channel: string): void {
+    if (this.closed) {
+      return
+    }
+
+    this.subscribedChannels.delete(channel)
+    void this.subscriptionClient.unsubscribe(channel).catch(() => undefined)
+  }
+
   /**
    * Translates a connection-level failure into the error the coordinator should
    * surface. Never throws, so it is safe to use inside promise callbacks.
@@ -342,6 +380,9 @@ export class RedisCoordinator implements Coordinator {
 
     await new Promise<void>((resolve, reject) => {
       let settled = false
+      // Claimed before subscribing, so a subscribe that completes after this
+      // waiter settled can see that another waiter still needs the channel.
+      this.claimChannel(channel)
 
       const cleanup = () => {
         if (settled) {
@@ -352,12 +393,7 @@ export class RedisCoordinator implements Coordinator {
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
         this.subscriptionClient.off('message', onMessage)
-        if (this.subscribedChannels.has(channel)) {
-          this.subscribedChannels.delete(channel)
-          void this.subscriptionClient
-            .unsubscribe(channel)
-            .catch(() => undefined)
-        }
+        this.releaseWaiter(channel)
       }
 
       const onAbort = () => {
@@ -382,18 +418,30 @@ export class RedisCoordinator implements Coordinator {
       signal?.addEventListener('abort', onAbort, { once: true })
       this.subscriptionClient.on('message', onMessage)
 
+      const subscribing = this.subscriptionClient.subscribe(channel)
+
+      // The command can outlive the timeout wrapper below, so the channel is
+      // tracked - or dropped again - when the command itself settles.
+      void subscribing.then(
+        () => {
+          if ((this.channelWaiters.get(channel) ?? 0) > 0) {
+            this.subscribedChannels.add(channel)
+            return
+          }
+
+          this.unsubscribeIdleChannel(channel)
+        },
+        () => undefined
+      )
+
       withCommandTimeout(
         this.commandTimeoutMs,
         'waitForChange.subscribe',
-        async () => await this.subscriptionClient.subscribe(channel)
-      )
-        .then(() => {
-          this.subscribedChannels.add(channel)
-        })
-        .catch((error) => {
-          cleanup()
-          reject(this.coordinatorError(error))
-        })
+        async () => await subscribing
+      ).catch((error) => {
+        cleanup()
+        reject(this.coordinatorError(error))
+      })
     })
   }
 
