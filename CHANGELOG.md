@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- e63d05a: Accept the value cache-manager and Cacheable resolve from `set()`: the adapters ignore it instead of demanding `Promise<void>`, so a real typed instance satisfies the adapter interface without a cast.
+- 457256a: Mark an instance closed before `close()` aborts its in-flight work, and reject every later `wrap()` with `CoordinationClosedError`, so closing cannot be undone by a cache hit or by a fail-open loader that runs once the coordinator has rejected its work.
+- 61b84e4: Hold the whole-flight deadline over coordination and cleanup as well: acquisition, the distributed wait and renewal are raced with the flight signal, releasing a lease is handed to the coordinator instead of awaited, and a lease that arrives after the flight gave up waiting is abandoned in the background.
+- c957645: Only treat a stored value as an encoded envelope when it has exactly the reserved shape - the marker and, optionally, a `value` - so an application object that carries `__crossflight_envelope__` next to fields of its own is returned as it was stored instead of being unwrapped into a `value`, or an `undefined`, that was never written under the key; a raw value of exactly the reserved shape stays indistinguishable from an envelope, so enabling `cacheUndefined` on an existing cache needs a migration or namespaced keys.
+- 9a163e4: Keep renewing the lease while the cache write is in flight, so a write that outlives its lease can no longer let a replacement owner publish first and then be overwritten by the stale value.
+- ba5b733: Treat Redis change notifications as best effort: they are issued on the same connection as the lease mutation but never awaited, so a failed or stalled publish can neither fail an acquisition that already owns the lock and leave it orphaned until its TTL, nor delay or misreport a renewal or release that did succeed.
+
 ## 0.3.0
 
 ### Minor Changes
