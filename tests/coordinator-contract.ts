@@ -7,7 +7,7 @@ export interface CoordinatorContractOptions {
   run?: boolean
   /** Wakes waiters when ownership changes: acquire, renew, complete, abandon. */
   notifications?: boolean
-  /** Rejects acquire() and waitForChange() once close() has been called. */
+  /** Rejects new work after close() and settles waits that are still pending. */
   closesOperations?: boolean
 }
 
@@ -32,7 +32,9 @@ export function runCoordinatorContract(
     it('grants a lease for a free key and reports a stable lease identifier', async () => {
       const coordinator = await create()
       const first = await coordinator.acquire(key('identity-a'), { ttlMs: 500 })
-      const second = await coordinator.acquire(key('identity-b'), { ttlMs: 500 })
+      const second = await coordinator.acquire(key('identity-b'), {
+        ttlMs: 500,
+      })
 
       expect(first).not.toBeNull()
       expect(second).not.toBeNull()
@@ -123,7 +125,8 @@ export function runCoordinatorContract(
         coordinator.waitForChange(key('wait-timeout'), { timeoutMs: 40 })
       ).resolves.toBeUndefined()
 
-      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(20)
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30)
+      expect(Date.now() - startedAt).toBeLessThan(1000)
       await coordinator.close()
     })
 
@@ -169,19 +172,37 @@ export function runCoordinatorContract(
           coordinator.waitForChange(key('closed'), { timeoutMs: 40 })
         ).rejects.toThrow(/clos/i)
       })
+
+      it('settles a wait that is still pending when the coordinator closes', async () => {
+        const coordinator = await create()
+        const waiter = coordinator.waitForChange(key('pending-close'), {
+          timeoutMs: 2000,
+        })
+
+        // Let the wait register before closing.
+        await sleep(50)
+        const startedAt = Date.now()
+        // Observe the cancellation before it happens, so the rejection is handled.
+        const cancelled = expect(waiter).rejects.toThrow(/clos/i)
+
+        await coordinator.close()
+
+        await cancelled
+        expect(Date.now() - startedAt).toBeLessThan(1000)
+      })
     }
 
     if (options.notifications) {
       it('wakes a waiter when the owner completes', async () => {
         const coordinator = await create()
         const waitKey = key('wake-complete')
-        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
-
-        // Let the subscription settle before the change is signalled.
-        await sleep(50)
-
+        // Acquire first: only the change below may wake the waiter.
         const lease = await coordinator.acquire(waitKey, { ttlMs: 2000 })
         expect(lease).not.toBeNull()
+
+        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
+        // Let the subscription settle before the change is signalled.
+        await sleep(50)
 
         const startedAt = Date.now()
         await lease!.complete()
@@ -194,12 +215,13 @@ export function runCoordinatorContract(
       it('wakes a waiter when the owner abandons', async () => {
         const coordinator = await create()
         const waitKey = key('wake-abandon')
-        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
-
-        await sleep(50)
-
+        // Acquire first: only the change below may wake the waiter.
         const lease = await coordinator.acquire(waitKey, { ttlMs: 2000 })
         expect(lease).not.toBeNull()
+
+        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
+        // Let the subscription settle before the change is signalled.
+        await sleep(50)
 
         const startedAt = Date.now()
         await lease!.abandon()
@@ -212,12 +234,13 @@ export function runCoordinatorContract(
       it('wakes a waiter when the owner renews', async () => {
         const coordinator = await create()
         const waitKey = key('wake-renew')
-        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
-
-        await sleep(50)
-
+        // Acquire first: only the change below may wake the waiter.
         const lease = await coordinator.acquire(waitKey, { ttlMs: 2000 })
         expect(lease).not.toBeNull()
+
+        const waiter = coordinator.waitForChange(waitKey, { timeoutMs: 2000 })
+        // Let the subscription settle before the change is signalled.
+        await sleep(50)
 
         const startedAt = Date.now()
         await expect(lease!.renew()).resolves.toBe(true)

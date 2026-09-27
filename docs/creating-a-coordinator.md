@@ -99,7 +99,7 @@ export class InMemoryCoordinator implements Coordinator {
 
   async acquire(key: string, options?: AcquireOptions): Promise<Lease | null> {
     if (options?.signal?.aborted) {
-      throw options.signal.reason
+      throw new DOMException('The operation was aborted', 'AbortError')
     }
 
     const ttlMs = options?.ttlMs ?? 30_000
@@ -126,7 +126,7 @@ export class InMemoryCoordinator implements Coordinator {
     const signal = options?.signal
 
     if (signal?.aborted) {
-      throw signal.reason
+      throw new DOMException('The operation was aborted', 'AbortError')
     }
 
     // Simple timeout-only wait (no actual notifications)
@@ -138,7 +138,7 @@ export class InMemoryCoordinator implements Coordinator {
 
       const onAbort = () => {
         cleanup()
-        reject(signal!.reason)
+        reject(new DOMException('The operation was aborted', 'AbortError'))
       }
 
       const cleanup = () => {
@@ -224,7 +224,7 @@ export function redisCoordinator(client: Redis): Coordinator {
   return {
     async acquire(key: string, options?: AcquireOptions): Promise<Lease | null> {
       if (options?.signal?.aborted) {
-        throw options.signal.reason
+        throw new DOMException('The operation was aborted', 'AbortError')
       }
 
       const ttlMs = options?.ttlMs ?? 30_000
@@ -254,7 +254,7 @@ export function redisCoordinator(client: Redis): Coordinator {
       const signal = options?.signal
 
       if (signal?.aborted) {
-        throw signal.reason
+        throw new DOMException('The operation was aborted', 'AbortError')
       }
 
       await new Promise<void>((resolve, reject) => {
@@ -265,7 +265,7 @@ export function redisCoordinator(client: Redis): Coordinator {
 
         const onAbort = () => {
           cleanup()
-          reject(signal!.reason)
+          reject(new DOMException('The operation was aborted', 'AbortError'))
         }
 
         const cleanup = () => {
@@ -343,15 +343,15 @@ describe('MyCoordinator', () => {
     const coordinator = new MyCoordinator()
     const controller = new AbortController()
 
-    setTimeout(() => controller.abort(), 10)
+    controller.abort(new Error('caller cancelled'))
 
     try {
       await coordinator.acquire('test:key', { signal: controller.signal })
       expect.fail('Should have thrown on abort')
     } catch (error) {
-      // The coordinator re-throws signal.reason, so the caller receives
-      // whatever was passed to controller.abort().
-      expect(error).toBeDefined()
+      // Coordinators reject with an AbortError; Crossflight surfaces the
+      // caller's signal.reason to the caller itself.
+      expect((error as DOMException).name).toBe('AbortError')
     }
 
     await coordinator.close()

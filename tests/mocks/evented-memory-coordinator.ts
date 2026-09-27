@@ -40,7 +40,7 @@ class EventedMemoryLease implements Lease {
 
 export class EventedMemoryCoordinator implements Coordinator {
   readonly owners = new Map<string, { ownerToken: string; expiresAt: number }>()
-  private readonly watchers = new Map<string, Set<() => void>>()
+  private readonly watchers = new Map<string, Set<(error?: unknown) => void>>()
   private closed = false
 
   async acquire(key: string, options?: AcquireOptions): Promise<Lease | null> {
@@ -83,10 +83,14 @@ export class EventedMemoryCoordinator implements Coordinator {
     const signal = options?.signal
 
     return await new Promise<void>((resolve, reject) => {
-      const set = this.watchers.get(key) ?? new Set<() => void>()
-      const notify = () => {
+      const set = this.watchers.get(key) ?? new Set<(error?: unknown) => void>()
+      const settle = (error?: unknown) => {
         cleanup()
-        resolve()
+        if (error === undefined) {
+          resolve()
+        } else {
+          reject(error)
+        }
       }
 
       const onAbort = () => {
@@ -97,7 +101,7 @@ export class EventedMemoryCoordinator implements Coordinator {
       const cleanup = () => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
-        set.delete(notify)
+        set.delete(settle)
         if (set.size === 0) {
           this.watchers.delete(key)
         }
@@ -108,7 +112,7 @@ export class EventedMemoryCoordinator implements Coordinator {
         resolve()
       }, timeoutMs)
 
-      set.add(notify)
+      set.add(settle)
       this.watchers.set(key, set)
       signal?.addEventListener('abort', onAbort, { once: true })
     })
@@ -117,6 +121,14 @@ export class EventedMemoryCoordinator implements Coordinator {
   async close(): Promise<void> {
     this.closed = true
     this.owners.clear()
+
+    // Waiters that are still parked must settle: the coordinator is gone.
+    for (const listeners of [...this.watchers.values()]) {
+      for (const settle of [...listeners]) {
+        settle(new Error('Coordinator is closed'))
+      }
+    }
+
     this.watchers.clear()
   }
 
@@ -130,8 +142,8 @@ export class EventedMemoryCoordinator implements Coordinator {
       return
     }
 
-    for (const listener of [...listeners]) {
-      listener()
+    for (const settle of [...listeners]) {
+      settle()
     }
   }
 

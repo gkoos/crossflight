@@ -761,9 +761,12 @@ describe.runIf(shouldRun)('redis coordinator integration', () => {
       return Promise.reject(new Error('unsubscribe failed'))
     }
 
+    // close() cancels the pending waiter, so observe the rejection before it fires.
+    const cancelled = expect(waiter).rejects.toThrow(/clos/i)
+
     await expect(coordinator.close()).resolves.toBeUndefined()
     expect(unsubscribeCalls).toBeGreaterThan(0)
-    await expect(waiter).resolves.toBeUndefined()
+    await cancelled
 
     subscriptionClient.unsubscribe = originalUnsubscribe
     await client.quit()
