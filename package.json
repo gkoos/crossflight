@@ -73,6 +73,7 @@
     "test:unit": "vitest run --config vitest.config.ts",
     "test:property": "vitest run --config vitest.generated.config.ts tests/property",
     "test:generated": "vitest run --config vitest.generated.config.ts",
+    "test:generated:deep": "cross-env CROSSFLIGHT_TEST_RUNS=10 vitest run --config vitest.generated.config.ts",
     "test:unit:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:integration:coverage": "vitest run --config vitest.integration.config.ts --coverage",
     "test:integration": "node --no-deprecation ./scripts/test-integration.js",

@@ -1,0 +1,73 @@
+name: Nightly fuzzing
+
+# The generated suites are deterministic on purpose: CI gates every pull request
+# on patch coverage, so a run that only failed on an unlucky seed would block a
+# merge that has nothing to do with the finding (see `tests/support/seed.ts`).
+# What that leaves unexplored is the rest of the seed space and the depth a pull
+# request has no time for, so this runs both: a fresh seed every night, every
+# suite at ten times its own case count, and the Redis differential with the same
+# seed - the one place a real Redis is fuzzed.
+#
+# A failing run prints the seed and the depth it used, so it replays with the
+# command in the log. Nothing here gates a merge.
+on:
+  schedule:
+    # 03:17 UTC: off the hour, so it does not queue behind every other cron job.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Seed to explore (empty for the run number)
+        required: false
+        type: string
+      runs:
+        description: Case-count multiplier
+        required: false
+        default: '10'
+        type: string
+
+permissions: read-all
+
+# A night's run is not superseded by the next one: it either finished or it is
+# still worth watching.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  generated:
+    runs-on: ubuntu-latest
+    env:
+      # The run number is the seed when none was given: varying it is the whole
+      # point of the schedule, and it is what a failing run reports.
+      CROSSFLIGHT_TEST_SEED: ${{ inputs.seed || github.run_number }}
+      CROSSFLIGHT_TEST_RUNS: ${{ inputs.runs || '10' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Report the seed under test
+        run: |
+          echo "seed=$CROSSFLIGHT_TEST_SEED depth=${CROSSFLIGHT_TEST_RUNS}x" \
+            >> "$GITHUB_STEP_SUMMARY"
+      - run: npm run test:generated
+
+  # The Redis suites, because the differential and the key layout are the only
+  # generated coverage a backend has, and they need a container to run. The seed
+  # reaches the container through the compose services' environment.
+  redis:
+    runs-on: ubuntu-latest
+    env:
+      CROSSFLIGHT_TEST_SEED: ${{ inputs.seed || github.run_number }}
+      CROSSFLIGHT_TEST_RUNS: ${{ inputs.runs || '10' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
