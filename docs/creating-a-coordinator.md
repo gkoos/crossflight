@@ -33,6 +33,7 @@ export interface WaitOptions {
 
 - **Acquire**: Try to claim ownership of a key. Returns a `Lease` if successful (you own it) or `null` if someone else owns it.
 - **Lease**: An ownership token that you hold while loading. Must track the owner token to prevent stale owners from interfering.
+  `lease.key` is the coordinator's own identifier for the lease - it may be namespaced or hashed - so do not compare it with the key passed to `wrap()`.
 - **Renew**: Extend the lease time. Returns `false` if the lease has expired or been taken over.
 - **WaitForChange**: Wait for the cache state to change (new owner acquired, owner completed, owner abandoned). Must timeout if no change happens.
 - **Close**: Clean up all state, cancel all waiting operations, shut down.
@@ -43,7 +44,7 @@ export interface WaitOptions {
 2. **Lease expiry**: Once TTL passes, the lease is invalid. Another caller can immediately acquire it.
 3. **Notification reliability**: `waitForChange()` must return when state changes, but it must also **timeout gracefully** if notifications are lost. Crossflight has retry logic to handle missed notifications.
 4. **No deadlocks**: If a process crashes while holding the lease, the lease must expire so other callers can proceed. Never make a lease permanent.
-5. **Signal respect**: `acquire()` and `waitForChange()` must respect `AbortSignal`. When the signal fires, stop waiting and reject with `signal.reason`. Crossflight will re-throw that reason to the caller.
+5. **Signal respect**: `acquire()` and `waitForChange()` must respect `AbortSignal`. When the signal is already aborted, or fires while waiting, stop waiting and reject with an `AbortError`; Crossflight surfaces the caller's `signal.reason` to the caller itself.
 
 ## Example: Simple In-Memory Coordinator
 

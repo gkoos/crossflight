@@ -106,10 +106,42 @@ describe('crossflight core', () => {
       crossflight.wrap('renew:periodic:key', async () => {
         await new Promise(resolve => setTimeout(resolve, 120))
         return 'value'
-      }, { ttl: 40 })
+      }, { leaseTtlMs: 40 })
     ).resolves.toBe('value')
 
     expect(renewCalls).toBeGreaterThanOrEqual(2)
+    await crossflight.close()
+  })
+
+  it('keeps the lease TTL independent of the cache ttl', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const acquireSpy = vi.spyOn(coordinator, 'acquire')
+    const setSpy = vi.spyOn(cache, 'set')
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    await crossflight.wrap('lease:independent', async () => 'value', { ttl: 5 })
+
+    // The cache keeps the short ttl; the lease uses the lease TTL, so a short
+    // cache lifetime can no longer expire the lease before its first renewal.
+    expect(setSpy).toHaveBeenCalledWith('lease:independent', 'value', { ttl: 5 })
+    expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(30_000)
+
+    await crossflight.close()
+  })
+
+  it('honours a per-call leaseTtlMs and floors it above the renewal interval', async () => {
+    const cache = new MemoryCache()
+    const coordinator = new InMemoryCoordinator()
+    const acquireSpy = vi.spyOn(coordinator, 'acquire')
+    const crossflight = createCrossflight({ cache, coordinator })
+
+    await crossflight.wrap('lease:explicit', async () => 'value', { leaseTtlMs: 2000 })
+    await crossflight.wrap('lease:floored', async () => 'value', { leaseTtlMs: 5 })
+
+    expect(acquireSpy.mock.calls[0]?.[1]?.ttlMs).toBe(2000)
+    expect(acquireSpy.mock.calls[1]?.[1]?.ttlMs).toBe(50)
+
     await crossflight.close()
   })
 
@@ -940,7 +972,7 @@ describe('crossflight core', () => {
       crossflight.wrap('renew:error:key', async () => {
         await new Promise(resolve => setTimeout(resolve, 120))
         return 'value'
-      }, { ttl: 40 })
+      }, { leaseTtlMs: 40 })
     ).rejects.toThrow('renew failed')
 
     await crossflight.close()
@@ -980,7 +1012,7 @@ describe('crossflight core', () => {
       crossflight.wrap('renew:event:key', async () => {
         await new Promise(resolve => setTimeout(resolve, 120))
         return 'value'
-      }, { ttl: 40 })
+      }, { leaseTtlMs: 40 })
     ).rejects.toThrow('renew blip')
 
     const renewalFailedEvent = events.find(
@@ -1266,7 +1298,7 @@ describe('crossflight core', () => {
             await new Promise(resolve => setTimeout(resolve, 120))
             return 'value'
           },
-          { ttl: 40 }
+          { leaseTtlMs: 40 }
         )
       ).rejects.toThrow('renew boom')
 
@@ -1940,7 +1972,7 @@ describe('crossflight core', () => {
             await new Promise(() => {})
             return 'value'
           },
-          { ttl: 30, timeoutMs: 2000 }
+          { leaseTtlMs: 30, timeoutMs: 2000 }
         )
         .catch(e => e)
 

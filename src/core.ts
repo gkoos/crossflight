@@ -17,6 +17,11 @@ const DEFAULT_MAX_RETRY_ATTEMPTS = 64
 const DEFAULT_RETRY_BACKOFF = (attempt: number): number =>
   Math.min(200, 25 + attempt * 25 + Math.floor(Math.random() * 25))
 const MIN_RENEW_INTERVAL_MS = 25
+/**
+ * A lease must outlive at least one renewal interval, otherwise it can expire
+ * before the first renewal fires and the owner loses ownership mid-load.
+ */
+const MIN_LEASE_TTL_MS = 2 * MIN_RENEW_INTERVAL_MS
 
 interface Flight {
   /** The shared in-flight work for a key; every local caller adopts it. */
@@ -246,7 +251,7 @@ export function createCrossflight({
 
     const effectiveFailureMode: CoordinationFailureMode =
       options.failureMode ?? failureMode
-    const leaseTtlMs = options.ttl ?? defaultTtlMs
+    const leaseTtlMs = Math.max(options.leaseTtlMs ?? defaultTtlMs, MIN_LEASE_TTL_MS)
 
     // The shared controller belongs to the flight, not to any single caller.
     // A caller's signal and timeout are applied by attachCaller, so one
