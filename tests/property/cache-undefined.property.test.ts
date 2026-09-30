@@ -19,7 +19,10 @@ import { createPropertySuite } from '../support/seed.js'
  * JSON store, and the three real adapters. The envelope suite checks the
  * discriminator on its own; the question here is the one a user asks - a loader
  * that resolves `undefined` runs once and is then served from the cache, and a
- * loader value of any shape comes back exactly as it was loaded.
+ * loader value of any shape comes back as the loader returned it to the call
+ * that ran it, and as the store transports it to every call after: the two
+ * differ for a value the transport cannot carry faithfully, like `-0` through
+ * JSON, and which of the two a caller sees is the store's decision to make.
  *
  * The option is also a migration: a value of the reserved shape that a process
  * with the option off left behind reads back as an envelope, and the properties
@@ -201,7 +204,7 @@ describe('cacheUndefined through a whole instance', () => {
   )
 
   itProperty(
-    'returns a loader value of any shape exactly as the backend transports it',
+    'returns the loader value to its own caller and the stored value to every caller after',
     loaderValue,
     async (value) => {
       for (const backend of backends) {
@@ -209,11 +212,18 @@ describe('cacheUndefined through a whole instance', () => {
           backend,
           { cacheUndefined: true },
           async ({ crossflight }) => {
+            // The call that runs the loader gets what the loader returned, as it
+            // returned it: nothing re-reads the cache to hand its own caller the
+            // store's copy of the value.
             const loaded = await crossflight.wrap(KEY, () => value)
-            expect(loaded, backend.name).toEqual(backend.roundTrip(value))
+            expect(loaded, backend.name).toEqual(value)
 
-            // Whatever came back has to have been served from what was stored:
-            // a second loader run would mean the value did not survive.
+            // Every call after it is served from what was stored, which is the
+            // backend's transport rather than Crossflight's: a value that cannot
+            // survive it - `-0` through JSON - comes back changed, and that is
+            // the store's decision rather than a loss in the option. A second
+            // loader run would instead mean the value did not survive at all, so
+            // the loader here throws.
             const served = await crossflight.wrap(KEY, () => {
               throw new Error('the loader ran again')
             })
