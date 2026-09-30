@@ -100,13 +100,21 @@ const deadlineOf = (scenario: Scenario): number | null =>
 /**
  * A generated scenario has to terminate. A parked loader bounds nothing by
  * itself, so where a *new* flight would have no deadline to be bounded by, every
- * caller is given a timeout of its own; and a stalled read is only ever bounded
- * by a deadline, so it only appears in a scenario that has one.
+ * caller is given a timeout of its own.
+ *
+ * A stalled read is bounded by the deadline of the flight it belongs to, and the
+ * deadline a *new* flight can have is the instance default: `flightDeadlineMs`
+ * is per-call and the harness passes it to the first caller alone, so a caller
+ * arriving after that flight settled starts one that has no deadline at all. A
+ * read that stalls where the default is missing is therefore bounded by nothing,
+ * which is a hang by design rather than a broken contract, so it is not
+ * generated.
  */
 const terminating = (scenario: Scenario): Scenario => {
-  const neverSettles =
-    scenario.loader === 'park' &&
-    (scenario.defaultDeadlineMs === null || scenario.defaultDeadlineMs <= 0)
+  const noDefaultDeadline =
+    scenario.defaultDeadlineMs === null || scenario.defaultDeadlineMs <= 0
+
+  const neverSettles = scenario.loader === 'park' && noDefaultDeadline
 
   const callers = scenario.callers.map((caller, index) => {
     // The first caller starts the flight, so it is the one that arrives at once.
@@ -128,7 +136,8 @@ const terminating = (scenario: Scenario): Scenario => {
   return {
     ...scenario,
     callers,
-    stallRead: deadlineOf(scenario) === null ? false : scenario.stallRead,
+    // What a flight a later caller starts for the key would be bounded by.
+    stallRead: noDefaultDeadline ? false : scenario.stallRead,
   }
 }
 
@@ -655,16 +664,30 @@ describe('a generated deadline and retry transcript', () => {
       const scenario = scenarioFor({
         defaultDeadlineMs: deadlineMs,
         stallRead: true,
+        // The first caller is bounded by the flight's deadline. A caller that
+        // arrives once that flight has settled starts a flight of its own, and
+        // the only deadline that one can have is the instance default - which is
+        // why a generated scenario keeps this one in place for a stalled read.
+        callers: [
+          { delayMs: 0, timeoutMs: null, cancelAfterMs: null },
+          {
+            delayMs: deadlineMs + LATE_MARGIN_MS,
+            timeoutMs: null,
+            cancelAfterMs: null,
+          },
+        ],
       })
 
       const report = await runScenario(scenario)
-      const outcome = report.callers[0]!.outcome
 
       expect(violationsOf(scenario, report)).toEqual([])
-      expect(outcome.status).toBe('rejected')
 
-      if (outcome.status === 'rejected') {
-        expect(outcome.reason).toBeInstanceOf(CoordinationTimeoutError)
+      for (const caller of report.callers) {
+        expect(caller.outcome.status).toBe('rejected')
+
+        if (caller.outcome.status === 'rejected') {
+          expect(caller.outcome.reason).toBeInstanceOf(CoordinationTimeoutError)
+        }
       }
 
       // The read was abandoned before ownership was taken or anything loaded.
